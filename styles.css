@@ -1266,6 +1266,7 @@ body {
     color: var(--accent-danger);
 }
 
+.account-fields,
 .debt-fields {
     background: var(--bg-tertiary);
     border-radius: 10px;
@@ -1273,8 +1274,268 @@ body {
     margin-bottom: 16px;
 }
 
+.account-fields .form-group,
 .debt-fields .form-group {
     margin-bottom: 12px;
+}
+
+/* Account Details Modal */
+.modal-large {
+    max-width: 700px;
+}
+
+.account-details-content {
+    padding: 24px;
+}
+
+.account-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.summary-item {
+    background: var(--bg-tertiary);
+    padding: 16px;
+    border-radius: 10px;
+    text-align: center;
+}
+
+.summary-item .label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    display: block;
+    margin-bottom: 4px;
+}
+
+.summary-item .value {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.summary-item .value.positive {
+    color: var(--accent-success);
+}
+
+.summary-item .value.negative {
+    color: var(--accent-danger);
+}
+
+.account-actions {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+}
+
+.account-details-content h3 {
+    font-size: 1rem;
+    color: var(--text-primary);
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.account-history {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.history-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.history-item:last-child {
+    border-bottom: none;
+}
+
+.history-info {
+    flex: 1;
+}
+
+.history-type {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.history-date {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.history-details {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.history-amount {
+    font-weight: 600;
+}
+
+.history-amount.positive {
+    color: var(--accent-success);
+}
+
+.history-amount.negative {
+    color: var(--accent-danger);
+}
+
+/* Withdrawal button */
+.btn-withdraw {
+    background: var(--accent-warning);
+    color: white;
+}
+
+.btn-withdraw:hover {
+    background: #d97706;
+}
+
+/* Account info badge */
+.account-badge {
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    margin-left: 8px;
+}
+
+/* Retirement contribution progress */
+.contribution-progress {
+    margin-top: 8px;
+}
+
+.contribution-progress-bar {
+    height: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.contribution-progress-fill {
+    height: 100%;
+    background: var(--accent-primary);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+.contribution-progress-text {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+/* History item styles for account details */
+.history-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 12px;
+    flex-shrink: 0;
+}
+
+.history-icon i {
+    font-size: 0.9rem;
+}
+
+.history-details {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.history-description {
+    font-weight: 500;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.history-date {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.history-amount {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+}
+
+.history-amount.positive {
+    color: var(--accent-success);
+}
+
+/* Credit utilization bar */
+.credit-utilization {
+    margin-top: 6px;
+}
+
+.utilization-bar {
+    height: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.utilization-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+.utilization-fill.low {
+    background: var(--accent-success);
+}
+
+.utilization-fill.high {
+    background: var(--accent-danger);
+}
+
+.utilization-text {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    display: block;
+}
+
+/* Asset contribution progress in list */
+.asset-contribution-progress {
+    margin-top: 6px;
+}
+
+.asset-contribution-progress .contribution-progress-bar {
+    height: 4px;
+    margin-bottom: 2px;
+}
+
+.contribution-text {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+}
+
+/* Full width summary item */
+.summary-item.full-width {
+    grid-column: 1 / -1;
+}
+
+.summary-item .remaining {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    display: block;
+    margin-top: 4px;
+}
+
+.summary-item .contribution-progress-bar {
+    margin-top: 8px;
 }
 
 .debt-fields .form-group:last-child {

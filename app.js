@@ -1076,6 +1076,23 @@ class FinanceApp {
             updatedAt: new Date().toISOString()
         };
 
+        // Add institution/account info if provided
+        const institution = document.getElementById('asset-institution').value.trim();
+        const accountLast4 = document.getElementById('asset-account-last4').value.trim();
+        if (institution) asset.institution = institution;
+        if (accountLast4) asset.accountLast4 = accountLast4;
+
+        // Add retirement-specific fields
+        const retirementTypes = ['401k', '403b', 'ira', 'roth-ira', 'pension', 'hsa', '529'];
+        if (retirementTypes.includes(category)) {
+            const employerMatch = parseFloat(document.getElementById('asset-employer-match').value) || 0;
+            const contributionLimit = parseFloat(document.getElementById('asset-contribution-limit').value) || 0;
+            const ytdContribution = parseFloat(document.getElementById('asset-ytd-contribution').value) || 0;
+            if (employerMatch > 0) asset.employerMatch = employerMatch;
+            if (contributionLimit > 0) asset.contributionLimit = contributionLimit;
+            asset.ytdContribution = ytdContribution;
+        }
+
         // Add debt-specific fields for liabilities
         if (type === 'liability') {
             const rate = parseFloat(document.getElementById('asset-rate').value) || 0;
@@ -1084,18 +1101,26 @@ class FinanceApp {
             asset.interestRate = rate;
             asset.minPayment = minPayment;
             asset.originalAmount = originalAmount;
+
+            // Credit limit for credit cards
+            if (category === 'credit-card') {
+                const creditLimit = parseFloat(document.getElementById('asset-credit-limit').value) || 0;
+                if (creditLimit > 0) asset.creditLimit = creditLimit;
+            }
         }
 
         const existingIndex = this.data.assets.findIndex(a => a.id === id);
         if (existingIndex > -1) {
-            // Preserve contribution/payment history
+            // Preserve contribution/payment/withdrawal history
             asset.contributions = this.data.assets[existingIndex].contributions || [];
             asset.payments = this.data.assets[existingIndex].payments || [];
+            asset.withdrawals = this.data.assets[existingIndex].withdrawals || [];
             this.data.assets[existingIndex] = asset;
             this.showToast('Updated successfully', 'success');
         } else {
             asset.contributions = [];
             asset.payments = [];
+            asset.withdrawals = [];
             this.data.assets.push(asset);
             this.showToast('Added successfully', 'success');
         }
@@ -1115,25 +1140,73 @@ class FinanceApp {
         document.getElementById('asset-modal-title').textContent = 'Edit ' + (asset.type === 'asset' ? 'Asset' : 'Liability');
 
         document.getElementById(`asset-${asset.type}`).checked = true;
-        this.toggleDebtFields();
         document.getElementById('asset-name').value = asset.name;
         document.getElementById('asset-value').value = asset.value;
         document.getElementById('asset-category-select').value = asset.category;
         document.getElementById('asset-notes').value = asset.notes || '';
+
+        // Fill institution/account info
+        document.getElementById('asset-institution').value = asset.institution || '';
+        document.getElementById('asset-account-last4').value = asset.accountLast4 || '';
+
+        // Fill retirement-specific fields
+        document.getElementById('asset-employer-match').value = asset.employerMatch || '';
+        document.getElementById('asset-contribution-limit').value = asset.contributionLimit || '';
+        document.getElementById('asset-ytd-contribution').value = asset.ytdContribution || '';
 
         // Fill debt fields if liability
         if (asset.type === 'liability') {
             document.getElementById('asset-rate').value = asset.interestRate || '';
             document.getElementById('asset-min-payment').value = asset.minPayment || '';
             document.getElementById('asset-original').value = asset.originalAmount || '';
+            document.getElementById('asset-credit-limit').value = asset.creditLimit || '';
         }
 
+        this.toggleDebtFields();
         this.openModal('asset-modal');
     }
 
     toggleDebtFields() {
         const isLiability = document.getElementById('asset-liability').checked;
         document.getElementById('debt-fields').style.display = isLiability ? 'block' : 'none';
+        this.toggleAccountFields();
+    }
+
+    toggleAccountFields() {
+        const category = document.getElementById('asset-category-select').value;
+        const isLiability = document.getElementById('asset-liability').checked;
+
+        // Get field containers
+        const accountFields = document.getElementById('account-fields');
+        const retirementFields = document.getElementById('retirement-fields');
+        const debtFields = document.getElementById('debt-fields');
+        const creditLimitGroup = document.getElementById('credit-limit-group');
+
+        // Reset all fields
+        accountFields.style.display = 'none';
+        retirementFields.style.display = 'none';
+        if (creditLimitGroup) creditLimitGroup.style.display = 'none';
+
+        // Show basic account fields for bank accounts, investments, retirement
+        const showAccountFields = ['checking', 'savings', 'brokerage', '401k', '403b', 'ira', 'roth-ira', 'hsa', 'pension', 'crypto', '529', 'fsa'];
+        if (showAccountFields.includes(category)) {
+            accountFields.style.display = 'block';
+        }
+
+        // Show retirement-specific fields
+        const retirementTypes = ['401k', '403b', 'ira', 'roth-ira', 'pension', 'hsa', '529'];
+        if (retirementTypes.includes(category)) {
+            retirementFields.style.display = 'block';
+        }
+
+        // Show debt fields for liabilities
+        if (isLiability) {
+            debtFields.style.display = 'block';
+            // Show credit limit for credit cards
+            if (category === 'credit-card' && creditLimitGroup) {
+                creditLimitGroup.style.display = 'block';
+            }
+        }
     }
 
     // Contribution Modal
@@ -1330,6 +1403,303 @@ class FinanceApp {
         return payoffDate;
     }
 
+    // Withdrawal Modal
+    openWithdrawalModal(assetId) {
+        const asset = this.data.assets.find(a => a.id === assetId);
+        if (!asset) return;
+
+        document.getElementById('withdrawal-asset-id').value = assetId;
+        document.getElementById('withdrawal-asset-name').textContent = asset.name;
+        document.getElementById('withdrawal-date').valueAsDate = new Date();
+        document.getElementById('withdrawal-amount').value = '';
+        document.getElementById('withdrawal-reason').value = '';
+
+        this.openModal('withdrawal-modal');
+    }
+
+    saveWithdrawal(event) {
+        event.preventDefault();
+
+        const assetId = document.getElementById('withdrawal-asset-id').value;
+        const amount = parseFloat(document.getElementById('withdrawal-amount').value);
+        const date = document.getElementById('withdrawal-date').value;
+        const reason = document.getElementById('withdrawal-reason').value;
+
+        const asset = this.data.assets.find(a => a.id === assetId);
+        if (!asset) return;
+
+        if (amount > asset.value) {
+            this.showToast('Withdrawal amount exceeds account balance', 'error');
+            return;
+        }
+
+        // Update asset value
+        asset.value -= amount;
+        asset.updatedAt = new Date().toISOString();
+
+        // Record withdrawal
+        if (!asset.withdrawals) asset.withdrawals = [];
+        asset.withdrawals.push({
+            id: Date.now().toString(),
+            amount,
+            date,
+            reason,
+            createdAt: new Date().toISOString()
+        });
+
+        // Create transaction record (income because money is coming out of the account to you)
+        const reasonLabels = {
+            'transfer': 'Transfer',
+            'expense': 'Personal expense',
+            'medical': 'Medical expense',
+            'education': 'Education expense',
+            'retirement': 'Retirement distribution',
+            'emergency': 'Emergency',
+            'other': 'Other'
+        };
+
+        const transaction = {
+            id: Date.now().toString(),
+            type: 'income',
+            amount: amount,
+            description: `Withdrawal from ${asset.name}${reason ? ' - ' + reasonLabels[reason] : ''}`,
+            categoryId: 'other-income',
+            date: date,
+            notes: 'Auto-created from withdrawal',
+            linkedAssetId: assetId,
+            createdAt: new Date().toISOString()
+        };
+        this.data.transactions.push(transaction);
+
+        this.recordNetworthSnapshot();
+        this.saveData();
+        this.closeModal('withdrawal-modal');
+        this.renderNetWorth();
+        this.renderDashboard();
+        this.showToast(`Withdrew ${this.formatCurrency(amount)} from ${asset.name}`, 'success');
+    }
+
+    // Account Details Modal
+    openAccountDetails(assetId) {
+        const asset = this.data.assets.find(a => a.id === assetId);
+        if (!asset) return;
+
+        document.getElementById('account-details-title').textContent = asset.name;
+
+        // Build summary
+        const summaryEl = document.getElementById('account-summary');
+        let summaryHtml = `
+            <div class="summary-item">
+                <span class="label">Current Value</span>
+                <span class="value ${asset.type === 'asset' ? 'positive' : 'negative'}">${this.formatCurrency(asset.value)}</span>
+            </div>
+            <div class="summary-item">
+                <span class="label">Account Type</span>
+                <span class="value">${this.formatAccountType(asset.category)}</span>
+            </div>
+        `;
+
+        if (asset.institution) {
+            summaryHtml += `
+                <div class="summary-item">
+                    <span class="label">Institution</span>
+                    <span class="value">${asset.institution}</span>
+                </div>
+            `;
+        }
+
+        if (asset.accountLast4) {
+            summaryHtml += `
+                <div class="summary-item">
+                    <span class="label">Account #</span>
+                    <span class="value">****${asset.accountLast4}</span>
+                </div>
+            `;
+        }
+
+        // Retirement-specific info
+        if (asset.contributionLimit) {
+            const ytd = asset.ytdContribution || 0;
+            const remaining = asset.contributionLimit - ytd;
+            const percentage = (ytd / asset.contributionLimit) * 100;
+            summaryHtml += `
+                <div class="summary-item full-width">
+                    <span class="label">YTD Contributions</span>
+                    <span class="value">${this.formatCurrency(ytd)} / ${this.formatCurrency(asset.contributionLimit)}</span>
+                    <div class="contribution-progress-bar">
+                        <div class="contribution-progress-fill" style="width: ${Math.min(percentage, 100)}%"></div>
+                    </div>
+                    <span class="remaining">${this.formatCurrency(remaining)} remaining</span>
+                </div>
+            `;
+        }
+
+        if (asset.employerMatch) {
+            summaryHtml += `
+                <div class="summary-item">
+                    <span class="label">Employer Match</span>
+                    <span class="value">${asset.employerMatch}%</span>
+                </div>
+            `;
+        }
+
+        // Credit card info
+        if (asset.creditLimit) {
+            const utilization = (asset.value / asset.creditLimit) * 100;
+            summaryHtml += `
+                <div class="summary-item">
+                    <span class="label">Credit Limit</span>
+                    <span class="value">${this.formatCurrency(asset.creditLimit)}</span>
+                </div>
+                <div class="summary-item">
+                    <span class="label">Utilization</span>
+                    <span class="value ${utilization > 30 ? 'negative' : 'positive'}">${utilization.toFixed(1)}%</span>
+                </div>
+            `;
+        }
+
+        // Debt info
+        if (asset.type === 'liability' && asset.originalAmount) {
+            const paidOff = asset.originalAmount - asset.value;
+            const percentage = (paidOff / asset.originalAmount) * 100;
+            summaryHtml += `
+                <div class="summary-item">
+                    <span class="label">Original Amount</span>
+                    <span class="value">${this.formatCurrency(asset.originalAmount)}</span>
+                </div>
+                <div class="summary-item">
+                    <span class="label">Paid Off</span>
+                    <span class="value positive">${percentage.toFixed(1)}%</span>
+                </div>
+            `;
+        }
+
+        summaryEl.innerHTML = summaryHtml;
+
+        // Build actions
+        const actionsEl = document.getElementById('account-actions');
+        if (asset.type === 'asset') {
+            actionsEl.innerHTML = `
+                <button class="btn-primary" onclick="app.closeModal('account-details-modal'); app.openContributionModal('${asset.id}')">
+                    <i class="fas fa-plus"></i> Add Contribution
+                </button>
+                <button class="btn-secondary btn-withdraw" onclick="app.closeModal('account-details-modal'); app.openWithdrawalModal('${asset.id}')">
+                    <i class="fas fa-minus"></i> Withdraw
+                </button>
+            `;
+        } else {
+            actionsEl.innerHTML = `
+                <button class="btn-primary" onclick="app.closeModal('account-details-modal'); app.openPaymentModal('${asset.id}')">
+                    <i class="fas fa-credit-card"></i> Make Payment
+                </button>
+            `;
+        }
+
+        // Build transaction history
+        const historyEl = document.getElementById('account-history');
+        let history = [];
+
+        // Add contributions
+        if (asset.contributions) {
+            asset.contributions.forEach(c => {
+                history.push({
+                    date: c.date,
+                    type: 'contribution',
+                    description: 'Contribution',
+                    amount: c.amount,
+                    icon: 'plus',
+                    color: '#10b981'
+                });
+            });
+        }
+
+        // Add withdrawals
+        if (asset.withdrawals) {
+            asset.withdrawals.forEach(w => {
+                history.push({
+                    date: w.date,
+                    type: 'withdrawal',
+                    description: 'Withdrawal' + (w.reason ? ` - ${w.reason}` : ''),
+                    amount: w.amount,
+                    icon: 'minus',
+                    color: '#ef4444'
+                });
+            });
+        }
+
+        // Add payments (for liabilities)
+        if (asset.payments) {
+            asset.payments.forEach(p => {
+                history.push({
+                    date: p.date,
+                    type: 'payment',
+                    description: `Payment (P: ${this.formatCurrency(p.principal)}, I: ${this.formatCurrency(p.interest)})`,
+                    amount: p.amount,
+                    icon: 'credit-card',
+                    color: '#6366f1'
+                });
+            });
+        }
+
+        // Sort by date descending
+        history.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        if (history.length === 0) {
+            historyEl.innerHTML = '<div class="empty-state"><p>No transaction history yet</p></div>';
+        } else {
+            historyEl.innerHTML = history.slice(0, 20).map(h => `
+                <div class="history-item">
+                    <div class="history-icon" style="background: ${h.color}20; color: ${h.color}">
+                        <i class="fas fa-${h.icon}"></i>
+                    </div>
+                    <div class="history-details">
+                        <span class="history-description">${h.description}</span>
+                        <span class="history-date">${new Date(h.date).toLocaleDateString()}</span>
+                    </div>
+                    <span class="history-amount ${h.type === 'contribution' ? 'positive' : ''}">${h.type === 'contribution' ? '+' : '-'}${this.formatCurrency(h.amount)}</span>
+                </div>
+            `).join('');
+        }
+
+        this.openModal('account-details-modal');
+    }
+
+    formatAccountType(category) {
+        const types = {
+            'checking': 'Checking Account',
+            'savings': 'Savings Account',
+            'cash': 'Cash',
+            'brokerage': 'Brokerage Account',
+            'crypto': 'Cryptocurrency',
+            '401k': '401(k)',
+            '403b': '403(b)',
+            'ira': 'Traditional IRA',
+            'roth-ira': 'Roth IRA',
+            'pension': 'Pension',
+            'hsa': 'HSA',
+            'fsa': 'FSA',
+            '529': '529 College Savings',
+            'property': 'Property/Real Estate',
+            'vehicles': 'Vehicles',
+            'other-asset': 'Other Assets',
+            'credit-card': 'Credit Card',
+            'auto-loan': 'Auto Loan',
+            'personal-loan': 'Personal Loan',
+            'student-loan': 'Student Loan',
+            'mortgage': 'Mortgage',
+            'heloc': 'HELOC',
+            'other-debt': 'Other Debt',
+            // Legacy categories
+            'cash': 'Cash & Bank',
+            'investments': 'Investments',
+            'retirement': 'Retirement',
+            'credit-cards': 'Credit Cards',
+            'loans': 'Loans',
+            'other-liability': 'Other'
+        };
+        return types[category] || category;
+    }
+
     deleteAsset(id) {
         this.data.assets = this.data.assets.filter(a => a.id !== id);
         this.recordNetworthSnapshot();
@@ -1391,26 +1761,50 @@ class FinanceApp {
         if (assets.length === 0) {
             assetsList.innerHTML = '<div class="empty-state"><p>No assets added yet</p></div>';
         } else {
-            assetsList.innerHTML = assets.map(a => `
-                <div class="asset-item">
-                    <div class="asset-info">
-                        <span class="asset-name">${a.name}</span>
-                        <span class="asset-category">${this.formatAssetCategory(a.category)}</span>
+            assetsList.innerHTML = assets.map(a => {
+                const institutionText = a.institution ? ` • ${a.institution}` : '';
+                const accountText = a.accountLast4 ? ` (****${a.accountLast4})` : '';
+
+                // Build YTD contribution progress for retirement accounts
+                let contributionProgress = '';
+                if (a.contributionLimit && a.contributionLimit > 0) {
+                    const ytd = a.ytdContribution || 0;
+                    const percentage = Math.min((ytd / a.contributionLimit) * 100, 100);
+                    contributionProgress = `
+                        <div class="asset-contribution-progress">
+                            <div class="contribution-progress-bar">
+                                <div class="contribution-progress-fill" style="width: ${percentage}%"></div>
+                            </div>
+                            <span class="contribution-text">${this.formatCurrency(ytd)} / ${this.formatCurrency(a.contributionLimit)}</span>
+                        </div>
+                    `;
+                }
+
+                return `
+                    <div class="asset-item">
+                        <div class="asset-info" onclick="app.openAccountDetails('${a.id}')" style="cursor: pointer;">
+                            <span class="asset-name">${a.name}${institutionText}${accountText}</span>
+                            <span class="asset-category">${this.formatAccountType(a.category)}</span>
+                            ${contributionProgress}
+                        </div>
+                        <span class="asset-value">${this.formatCurrency(a.value)}</span>
+                        <div class="asset-actions">
+                            <button class="btn-action btn-contribute" onclick="app.openContributionModal('${a.id}')" title="Add Contribution">
+                                <i class="fas fa-plus"></i> Add
+                            </button>
+                            <button class="btn-action btn-withdraw" onclick="app.openWithdrawalModal('${a.id}')" title="Withdraw">
+                                <i class="fas fa-minus"></i>
+                            </button>
+                            <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button class="btn-icon delete" onclick="app.deleteAsset('${a.id}')" title="Delete">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
                     </div>
-                    <span class="asset-value">${this.formatCurrency(a.value)}</span>
-                    <div class="asset-actions">
-                        <button class="btn-action btn-contribute" onclick="app.openContributionModal('${a.id}')" title="Add Contribution">
-                            <i class="fas fa-plus"></i> Add
-                        </button>
-                        <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit">
-                            <i class="fas fa-edit"></i>
-                        </button>
-                        <button class="btn-icon delete" onclick="app.deleteAsset('${a.id}')" title="Delete">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         // Render liabilities list
@@ -1426,12 +1820,29 @@ class FinanceApp {
                     ? `Payoff: <span class="payoff-date">${payoffDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}</span>`
                     : (a.interestRate ? 'Add min payment to see payoff' : '');
                 const rateText = a.interestRate ? ` @ ${a.interestRate}%` : '';
+                const institutionText = a.institution ? ` • ${a.institution}` : '';
+
+                // Credit utilization for credit cards
+                let utilizationBar = '';
+                if (a.creditLimit && a.creditLimit > 0) {
+                    const utilization = Math.min((a.value / a.creditLimit) * 100, 100);
+                    const utilizationClass = utilization > 30 ? 'high' : 'low';
+                    utilizationBar = `
+                        <div class="credit-utilization">
+                            <div class="utilization-bar">
+                                <div class="utilization-fill ${utilizationClass}" style="width: ${utilization}%"></div>
+                            </div>
+                            <span class="utilization-text">${utilization.toFixed(0)}% used</span>
+                        </div>
+                    `;
+                }
 
                 return `
                     <div class="liability-item">
-                        <div class="liability-info">
-                            <span class="liability-name">${a.name}${rateText}</span>
-                            <span class="liability-category">${this.formatAssetCategory(a.category)}</span>
+                        <div class="liability-info" onclick="app.openAccountDetails('${a.id}')" style="cursor: pointer;">
+                            <span class="liability-name">${a.name}${institutionText}${rateText}</span>
+                            <span class="liability-category">${this.formatAccountType(a.category)}</span>
+                            ${utilizationBar}
                             ${payoffText ? `<div class="debt-payoff-info">${payoffText}</div>` : ''}
                         </div>
                         <span class="liability-value">${this.formatCurrency(a.value)}</span>
