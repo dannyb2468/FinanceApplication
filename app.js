@@ -12,6 +12,9 @@ class FinanceApp {
             assets: [],
             networthHistory: [],
             categories: [],
+            envelopes: [],
+            incomeSources: [],
+            paycheckHistory: [],
             settings: {
                 theme: 'light',
                 currency: '$'
@@ -372,6 +375,9 @@ class FinanceApp {
             case 'reports':
                 this.renderReports();
                 break;
+            case 'envelopes':
+                this.renderEnvelopes();
+                break;
             case 'settings':
                 this.renderSettings();
                 break;
@@ -568,6 +574,14 @@ class FinanceApp {
             this.updateRecurringCategories();
         } else if (modalId === 'budget-modal') {
             this.populateBudgetCategories();
+        } else if (modalId === 'envelope-modal') {
+            this.populateEnvelopeCategoryDropdown();
+        } else if (modalId === 'paycheck-modal') {
+            this.populatePaycheckModal();
+        } else if (modalId === 'income-source-modal') {
+            this.populateIncomeSourceAccountDropdown();
+        } else if (modalId === 'envelope-transfer-modal') {
+            this.populateEnvelopeTransferDropdowns();
         }
 
         // Focus the first focusable element inside the modal
@@ -633,10 +647,15 @@ class FinanceApp {
         const recurringId = document.getElementById('recurring-id');
         const assetId = document.getElementById('asset-id');
 
+        const envelopeId = document.getElementById('envelope-id');
+        const incomeSourceId = document.getElementById('income-source-id');
+
         if (transactionId) transactionId.value = '';
         if (budgetId) budgetId.value = '';
         if (recurringId) recurringId.value = '';
         if (assetId) assetId.value = '';
+        if (envelopeId) envelopeId.value = '';
+        if (incomeSourceId) incomeSourceId.value = '';
 
         // Reset transaction modal to defaults
         if (modalId === 'transaction-modal') {
@@ -723,7 +742,8 @@ class FinanceApp {
         // Check if category is in use
         const inUse = this.data.transactions.some(t => t.categoryId === id) ||
                       this.data.budgets.some(b => b.categoryId === id) ||
-                      this.data.recurring.some(r => r.categoryId === id);
+                      this.data.recurring.some(r => r.categoryId === id) ||
+                      (this.data.envelopes || []).some(e => e.linkedCategoryId === id);
 
         if (inUse) {
             this.showToast('Cannot delete category that is in use', 'error');
@@ -786,10 +806,12 @@ class FinanceApp {
         if (existingIndex > -1) {
             const oldTransaction = this.data.transactions[existingIndex];
             this.reverseTransactionAccountEffect(oldTransaction);
+            this.reverseEnvelopeEffect(oldTransaction);
         }
 
         // Apply the new transaction's effect on accounts
         this.applyTransactionAccountEffect(transaction);
+        this.applyEnvelopeEffect(transaction);
 
         if (existingIndex > -1) {
             this.data.transactions[existingIndex] = transaction;
@@ -1023,6 +1045,7 @@ class FinanceApp {
         if (transaction) {
             // Reverse the account effect before deleting
             this.reverseTransactionAccountEffect(transaction);
+            this.reverseEnvelopeEffect(transaction);
         }
 
         this.data.transactions = this.data.transactions.filter(t => t.id !== id);
@@ -1932,6 +1955,11 @@ class FinanceApp {
                 fromAccount.value -= payment;
                 fromAccount.updatedAt = new Date().toISOString();
             }
+        }
+
+        // Distribute CC payment across envelopes with ccPending
+        if (debt.type === 'liability' && debt.category === 'credit-card') {
+            this.distributePaymentAcrossEnvelopes(payment, fromAccountId);
         }
 
         // Record payment
@@ -3320,6 +3348,9 @@ class FinanceApp {
             assets: [],
             networthHistory: [],
             categories: [...this.defaultCategories],
+            envelopes: [],
+            incomeSources: [],
+            paycheckHistory: [],
             settings: {
                 theme: 'light',
                 currency: '$'
@@ -3329,6 +3360,681 @@ class FinanceApp {
         this.closeModal('confirm-dialog');
         this.renderAll();
         this.showToast('All data cleared', 'success');
+    }
+
+    // ==========================================
+    // ENVELOPE BUDGETING
+    // ==========================================
+
+    getEnvelopeBalance(envelope) {
+        const accountTotal = Object.values(envelope.accountBalances || {}).reduce((sum, v) => sum + v, 0);
+        return accountTotal - (envelope.ccPending || 0);
+    }
+
+    getEnvelopePerPaycheckTarget(envelope) {
+        const amount = envelope.targetAmount || 0;
+        switch (envelope.targetFrequency) {
+            case 'weekly': return amount * 52 / 26;
+            case 'biweekly': return amount;
+            case 'monthly': return amount * 12 / 26;
+            case 'quarterly': return amount * 4 / 26;
+            case 'yearly': return amount / 26;
+            default: return amount * 12 / 26;
+        }
+    }
+
+    getOverdrawnEnvelopes() {
+        return (this.data.envelopes || []).filter(e => this.getEnvelopeBalance(e) < -0.005);
+    }
+
+    populateEnvelopeCategoryDropdown() {
+        const select = document.getElementById('envelope-category');
+        if (!select) return;
+        select.innerHTML = '<option value="">None (manual only)</option>';
+        const linkedIds = (this.data.envelopes || []).map(e => e.linkedCategoryId).filter(Boolean);
+        const editingId = document.getElementById('envelope-id').value;
+        const editingEnv = editingId ? (this.data.envelopes || []).find(e => e.id === editingId) : null;
+
+        this.data.categories
+            .filter(c => c.type === 'expense' && (!linkedIds.includes(c.id) || (editingEnv && editingEnv.linkedCategoryId === c.id)))
+            .forEach(cat => {
+                select.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
+            });
+    }
+
+    saveEnvelope(event) {
+        event.preventDefault();
+        const id = document.getElementById('envelope-id').value || Date.now().toString();
+        const name = document.getElementById('envelope-name').value.trim();
+        const linkedCategoryId = document.getElementById('envelope-category').value || null;
+        const targetAmount = parseFloat(document.getElementById('envelope-target').value) || 0;
+        const targetFrequency = document.getElementById('envelope-frequency').value;
+        const color = document.getElementById('envelope-color').value;
+
+        if (!name) {
+            this.showToast('Envelope name is required', 'error');
+            return;
+        }
+        if (targetAmount < 0) {
+            this.showToast('Target amount cannot be negative', 'error');
+            return;
+        }
+
+        if (!this.data.envelopes) this.data.envelopes = [];
+        const existingIndex = this.data.envelopes.findIndex(e => e.id === id);
+
+        const envelope = existingIndex > -1 ? { ...this.data.envelopes[existingIndex] } : {
+            id,
+            accountBalances: {},
+            ccPending: 0,
+            createdAt: new Date().toISOString()
+        };
+
+        envelope.name = name;
+        envelope.linkedCategoryId = linkedCategoryId;
+        envelope.targetAmount = targetAmount;
+        envelope.targetFrequency = targetFrequency;
+        envelope.color = color;
+
+        if (existingIndex > -1) {
+            this.data.envelopes[existingIndex] = envelope;
+            this.showToast('Envelope updated', 'success');
+        } else {
+            this.data.envelopes.push(envelope);
+            this.showToast('Envelope created', 'success');
+        }
+
+        this.saveData();
+        this.closeModal('envelope-modal');
+        this.renderEnvelopes();
+    }
+
+    editEnvelope(id) {
+        const envelope = (this.data.envelopes || []).find(e => e.id === id);
+        if (!envelope) return;
+
+        document.getElementById('envelope-id').value = envelope.id;
+        document.getElementById('envelope-name').value = envelope.name;
+        document.getElementById('envelope-target').value = envelope.targetAmount || '';
+        document.getElementById('envelope-frequency').value = envelope.targetFrequency || 'monthly';
+        document.getElementById('envelope-color').value = envelope.color || '#6366f1';
+
+        this.openModal('envelope-modal');
+
+        // Set linked category after dropdown is populated
+        setTimeout(() => {
+            document.getElementById('envelope-category').value = envelope.linkedCategoryId || '';
+        }, 50);
+    }
+
+    deleteEnvelope(id) {
+        this.confirmAction('Delete Envelope', 'Are you sure you want to delete this envelope? Allocated funds data will be lost.', () => {
+            this.data.envelopes = (this.data.envelopes || []).filter(e => e.id !== id);
+            this.saveData();
+            this.renderEnvelopes();
+            this.showToast('Envelope deleted', 'success');
+        });
+    }
+
+    // Income Source CRUD
+
+    saveIncomeSource(event) {
+        event.preventDefault();
+        const id = document.getElementById('income-source-id').value || Date.now().toString();
+        const name = document.getElementById('income-source-name').value.trim();
+        const defaultAccountId = document.getElementById('income-source-account').value || null;
+
+        if (!name) {
+            this.showToast('Income source name is required', 'error');
+            return;
+        }
+
+        if (!this.data.incomeSources) this.data.incomeSources = [];
+        const existingIndex = this.data.incomeSources.findIndex(s => s.id === id);
+
+        const source = existingIndex > -1 ? { ...this.data.incomeSources[existingIndex] } : {
+            id,
+            allocationTemplate: {},
+            createdAt: new Date().toISOString()
+        };
+
+        source.name = name;
+        source.defaultAccountId = defaultAccountId;
+
+        if (existingIndex > -1) {
+            this.data.incomeSources[existingIndex] = source;
+            this.showToast('Income source updated', 'success');
+        } else {
+            this.data.incomeSources.push(source);
+            this.showToast('Income source added', 'success');
+        }
+
+        this.saveData();
+        this.closeModal('income-source-modal');
+        this.renderEnvelopes();
+    }
+
+    editIncomeSource(id) {
+        const source = (this.data.incomeSources || []).find(s => s.id === id);
+        if (!source) return;
+
+        document.getElementById('income-source-id').value = source.id;
+        document.getElementById('income-source-name').value = source.name;
+
+        this.openModal('income-source-modal');
+
+        setTimeout(() => {
+            this.populateIncomeSourceAccountDropdown();
+            document.getElementById('income-source-account').value = source.defaultAccountId || '';
+        }, 50);
+    }
+
+    deleteIncomeSource(id) {
+        this.confirmAction('Delete Income Source', 'Are you sure? Allocation templates for this source will be lost.', () => {
+            this.data.incomeSources = (this.data.incomeSources || []).filter(s => s.id !== id);
+            this.saveData();
+            this.renderEnvelopes();
+            this.showToast('Income source deleted', 'success');
+        });
+    }
+
+    populateIncomeSourceAccountDropdown() {
+        const select = document.getElementById('income-source-account');
+        if (!select) return;
+        select.innerHTML = '<option value="">None</option>';
+        this.buildAccountOptionsHtml(select);
+    }
+
+    buildAccountOptionsHtml(select, defaultLabel) {
+        const assets = this.data.assets.filter(a => a.type === 'asset');
+        const liabilities = this.data.assets.filter(a => a.type === 'liability');
+
+        if (assets.length > 0) {
+            let html = '<optgroup label="Bank & Investment Accounts">';
+            assets.forEach(a => {
+                const displayName = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
+                html += `<option value="${this.escapeHtml(a.id)}">${displayName}</option>`;
+            });
+            html += '</optgroup>';
+            select.innerHTML += html;
+        }
+
+        if (liabilities.length > 0) {
+            let html = '<optgroup label="Credit Cards & Loans">';
+            liabilities.forEach(a => {
+                const displayName = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
+                html += `<option value="${this.escapeHtml(a.id)}">${displayName}</option>`;
+            });
+            html += '</optgroup>';
+            select.innerHTML += html;
+        }
+    }
+
+    // Paycheck flow
+
+    populatePaycheckModal() {
+        // Populate income source dropdown
+        const sourceSelect = document.getElementById('paycheck-source');
+        sourceSelect.innerHTML = '<option value="">Select income source...</option>';
+        (this.data.incomeSources || []).forEach(s => {
+            sourceSelect.innerHTML += `<option value="${this.escapeHtml(s.id)}">${this.escapeHtml(s.name)}</option>`;
+        });
+
+        // Populate deposit account dropdown
+        const accountSelect = document.getElementById('paycheck-account');
+        accountSelect.innerHTML = '<option value="">Select deposit account...</option>';
+        this.buildAccountOptionsHtml(accountSelect);
+
+        // Set date to today
+        document.getElementById('paycheck-date').valueAsDate = new Date();
+
+        // Build allocation table
+        this.buildPaycheckAllocationTable();
+        this.updatePaycheckUnallocated();
+    }
+
+    onPaycheckSourceChange() {
+        const sourceId = document.getElementById('paycheck-source').value;
+        const source = sourceId ? (this.data.incomeSources || []).find(s => s.id === sourceId) : null;
+
+        // Set default account
+        if (source && source.defaultAccountId) {
+            document.getElementById('paycheck-account').value = source.defaultAccountId;
+        }
+
+        // Pre-fill allocations from template or per-paycheck targets
+        const envelopes = this.data.envelopes || [];
+        envelopes.forEach(env => {
+            const input = document.getElementById(`paycheck-alloc-${env.id}`);
+            if (!input) return;
+            if (source && source.allocationTemplate && source.allocationTemplate[env.id] !== undefined) {
+                input.value = source.allocationTemplate[env.id];
+            } else {
+                input.value = this.getEnvelopePerPaycheckTarget(env).toFixed(2);
+            }
+        });
+
+        this.updatePaycheckUnallocated();
+    }
+
+    buildPaycheckAllocationTable() {
+        const container = document.getElementById('paycheck-allocations');
+        const envelopes = this.data.envelopes || [];
+
+        if (envelopes.length === 0) {
+            container.innerHTML = '<p class="empty-state">No envelopes created yet. Create envelopes first.</p>';
+            return;
+        }
+
+        let html = '';
+        envelopes.forEach(env => {
+            const balance = this.getEnvelopeBalance(env);
+            const perPaycheck = this.getEnvelopePerPaycheckTarget(env);
+            const balanceClass = balance < -0.005 ? 'negative' : 'positive';
+            html += `
+                <div class="paycheck-alloc-row">
+                    <div class="paycheck-alloc-info">
+                        <span class="color-dot" style="background:${this.escapeHtml(env.color)}"></span>
+                        <span class="alloc-name">${this.escapeHtml(env.name)}</span>
+                    </div>
+                    <span class="alloc-balance ${balanceClass}">${this.formatCurrency(balance)}</span>
+                    <input type="number" id="paycheck-alloc-${this.escapeHtml(env.id)}" class="alloc-input" step="0.01" min="0" value="${perPaycheck.toFixed(2)}" oninput="app.updatePaycheckUnallocated()">
+                    <span class="alloc-target">${this.formatCurrency(perPaycheck)}/ea</span>
+                </div>`;
+        });
+        container.innerHTML = html;
+    }
+
+    updatePaycheckUnallocated() {
+        const totalAmount = parseFloat(document.getElementById('paycheck-amount').value) || 0;
+        const envelopes = this.data.envelopes || [];
+        let allocated = 0;
+        envelopes.forEach(env => {
+            const input = document.getElementById(`paycheck-alloc-${env.id}`);
+            if (input) allocated += parseFloat(input.value) || 0;
+        });
+
+        const unallocated = totalAmount - allocated;
+        const el = document.getElementById('paycheck-unallocated');
+        if (el) {
+            el.textContent = this.formatCurrency(unallocated);
+            el.className = 'paycheck-unallocated-value' + (unallocated < -0.005 ? ' negative' : '');
+        }
+    }
+
+    savePaycheck(event) {
+        event.preventDefault();
+        const sourceId = document.getElementById('paycheck-source').value || null;
+        const totalAmount = parseFloat(document.getElementById('paycheck-amount').value);
+        const depositAccountId = document.getElementById('paycheck-account').value || null;
+        const date = document.getElementById('paycheck-date').value;
+
+        if (!totalAmount || totalAmount <= 0) {
+            this.showToast('Paycheck amount must be greater than 0', 'error');
+            return;
+        }
+        if (!date) {
+            this.showToast('Date is required', 'error');
+            return;
+        }
+
+        const envelopes = this.data.envelopes || [];
+        const allocations = [];
+        let totalAllocated = 0;
+
+        envelopes.forEach(env => {
+            const input = document.getElementById(`paycheck-alloc-${env.id}`);
+            const amount = input ? parseFloat(input.value) || 0 : 0;
+            if (amount > 0) {
+                allocations.push({ envelopeId: env.id, amount });
+                totalAllocated += amount;
+            }
+        });
+
+        if (totalAllocated > totalAmount + 0.005) {
+            this.showToast('Allocations exceed paycheck amount', 'error');
+            return;
+        }
+
+        // Create income transaction
+        const transactionId = Date.now().toString();
+        const source = sourceId ? (this.data.incomeSources || []).find(s => s.id === sourceId) : null;
+        const sourceName = source ? source.name : 'Paycheck';
+
+        const transaction = {
+            id: transactionId,
+            type: 'income',
+            amount: totalAmount,
+            description: `${sourceName} paycheck`,
+            categoryId: 'salary',
+            date,
+            notes: `Envelope allocations: ${allocations.length} envelopes`,
+            fromAccountId: null,
+            toAccountId: depositAccountId,
+            createdAt: new Date().toISOString()
+        };
+
+        this.applyTransactionAccountEffect(transaction);
+        this.data.transactions.push(transaction);
+
+        // Update envelope balances
+        allocations.forEach(alloc => {
+            const env = envelopes.find(e => e.id === alloc.envelopeId);
+            if (env) {
+                if (!env.accountBalances) env.accountBalances = {};
+                const acctKey = depositAccountId || '_cash';
+                env.accountBalances[acctKey] = (env.accountBalances[acctKey] || 0) + alloc.amount;
+            }
+        });
+
+        // Save allocation template to income source
+        if (source) {
+            source.allocationTemplate = {};
+            allocations.forEach(alloc => {
+                source.allocationTemplate[alloc.envelopeId] = alloc.amount;
+            });
+        }
+
+        // Record paycheck history
+        if (!this.data.paycheckHistory) this.data.paycheckHistory = [];
+        this.data.paycheckHistory.push({
+            id: transactionId + '-paycheck',
+            incomeSourceId: sourceId,
+            incomeSourceName: sourceName,
+            totalAmount,
+            depositAccountId,
+            allocations,
+            unallocated: totalAmount - totalAllocated,
+            transactionId,
+            date,
+            createdAt: new Date().toISOString()
+        });
+
+        this.recordNetworthSnapshot();
+        this.saveData();
+        this.closeModal('paycheck-modal');
+        this.renderEnvelopes();
+        this.renderDashboard();
+        this.showToast(`Paycheck of ${this.formatCurrency(totalAmount)} recorded`, 'success');
+    }
+
+    // Envelope transfers
+
+    populateEnvelopeTransferDropdowns() {
+        const fromSelect = document.getElementById('transfer-from-envelope');
+        const toSelect = document.getElementById('transfer-to-envelope');
+        const envelopes = this.data.envelopes || [];
+
+        fromSelect.innerHTML = '<option value="">Select envelope...</option>';
+        toSelect.innerHTML = '<option value="">Select envelope...</option>';
+
+        envelopes.forEach(env => {
+            const balance = this.getEnvelopeBalance(env);
+            const opt = `<option value="${this.escapeHtml(env.id)}">${this.escapeHtml(env.name)} (${this.formatCurrency(balance)})</option>`;
+            fromSelect.innerHTML += opt;
+            toSelect.innerHTML += opt;
+        });
+    }
+
+    saveEnvelopeTransfer(event) {
+        event.preventDefault();
+        const fromId = document.getElementById('transfer-from-envelope').value;
+        const toId = document.getElementById('transfer-to-envelope').value;
+        const amount = parseFloat(document.getElementById('envelope-transfer-amount').value);
+
+        if (!fromId || !toId) {
+            this.showToast('Select both envelopes', 'error');
+            return;
+        }
+        if (fromId === toId) {
+            this.showToast('Cannot transfer to the same envelope', 'error');
+            return;
+        }
+        if (!amount || amount <= 0) {
+            this.showToast('Amount must be greater than 0', 'error');
+            return;
+        }
+
+        const fromEnv = (this.data.envelopes || []).find(e => e.id === fromId);
+        const toEnv = (this.data.envelopes || []).find(e => e.id === toId);
+        if (!fromEnv || !toEnv) return;
+
+        // Move from the first account that has funds
+        let remaining = amount;
+        for (const [acctId, bal] of Object.entries(fromEnv.accountBalances || {})) {
+            if (remaining <= 0) break;
+            const move = Math.min(bal, remaining);
+            fromEnv.accountBalances[acctId] -= move;
+            if (!toEnv.accountBalances) toEnv.accountBalances = {};
+            toEnv.accountBalances[acctId] = (toEnv.accountBalances[acctId] || 0) + move;
+            remaining -= move;
+        }
+
+        this.saveData();
+        this.closeModal('envelope-transfer-modal');
+        this.renderEnvelopes();
+        this.showToast(`Transferred ${this.formatCurrency(amount)} between envelopes`, 'success');
+    }
+
+    // Transaction integration
+
+    applyEnvelopeEffect(transaction) {
+        if (!this.data.envelopes || this.data.envelopes.length === 0) return;
+        const { type, amount, categoryId, fromAccountId } = transaction;
+
+        if (type !== 'expense' || !categoryId) return;
+
+        const envelope = this.data.envelopes.find(e => e.linkedCategoryId === categoryId);
+        if (!envelope) return;
+
+        const fromAccount = fromAccountId ? this.data.assets.find(a => a.id === fromAccountId) : null;
+        const isCreditCard = fromAccount && fromAccount.type === 'liability' && fromAccount.category === 'credit-card';
+
+        if (isCreditCard) {
+            // CC charge: money still in bank, but earmarked for CC payment
+            envelope.ccPending = (envelope.ccPending || 0) + amount;
+        } else if (fromAccountId) {
+            // Bank/debit charge: reduce envelope's account balance
+            if (!envelope.accountBalances) envelope.accountBalances = {};
+            envelope.accountBalances[fromAccountId] = (envelope.accountBalances[fromAccountId] || 0) - amount;
+        } else {
+            // Cash: reduce a generic cash balance
+            if (!envelope.accountBalances) envelope.accountBalances = {};
+            envelope.accountBalances['_cash'] = (envelope.accountBalances['_cash'] || 0) - amount;
+        }
+
+        // Check for overdrawn
+        const balance = this.getEnvelopeBalance(envelope);
+        if (balance < -0.005) {
+            this.showToast(`${envelope.name} envelope is overdrawn by ${this.formatCurrency(Math.abs(balance))}. This may affect your ability to pay other bills.`, 'warning');
+        }
+    }
+
+    reverseEnvelopeEffect(transaction) {
+        if (!this.data.envelopes || this.data.envelopes.length === 0) return;
+        const { type, amount, categoryId, fromAccountId } = transaction;
+
+        if (type !== 'expense' || !categoryId) return;
+
+        const envelope = this.data.envelopes.find(e => e.linkedCategoryId === categoryId);
+        if (!envelope) return;
+
+        const fromAccount = fromAccountId ? this.data.assets.find(a => a.id === fromAccountId) : null;
+        const isCreditCard = fromAccount && fromAccount.type === 'liability' && fromAccount.category === 'credit-card';
+
+        if (isCreditCard) {
+            envelope.ccPending = Math.max(0, (envelope.ccPending || 0) - amount);
+        } else if (fromAccountId) {
+            if (!envelope.accountBalances) envelope.accountBalances = {};
+            envelope.accountBalances[fromAccountId] = (envelope.accountBalances[fromAccountId] || 0) + amount;
+        } else {
+            if (!envelope.accountBalances) envelope.accountBalances = {};
+            envelope.accountBalances['_cash'] = (envelope.accountBalances['_cash'] || 0) + amount;
+        }
+    }
+
+    distributePaymentAcrossEnvelopes(paymentAmount, fromAccountId) {
+        if (!this.data.envelopes || this.data.envelopes.length === 0) return;
+
+        const envelopesWithPending = this.data.envelopes.filter(e => (e.ccPending || 0) > 0.005);
+        if (envelopesWithPending.length === 0) return;
+
+        const totalPending = envelopesWithPending.reduce((sum, e) => sum + (e.ccPending || 0), 0);
+        const distributable = Math.min(paymentAmount, totalPending);
+
+        envelopesWithPending.forEach(env => {
+            const share = (env.ccPending / totalPending) * distributable;
+            env.ccPending = Math.max(0, env.ccPending - share);
+            if (fromAccountId) {
+                if (!env.accountBalances) env.accountBalances = {};
+                env.accountBalances[fromAccountId] = (env.accountBalances[fromAccountId] || 0) - share;
+            }
+        });
+    }
+
+    // Rendering
+
+    renderEnvelopes() {
+        const container = document.getElementById('envelopes-page');
+        if (!container) return;
+
+        const envelopes = this.data.envelopes || [];
+        const overdrawn = this.getOverdrawnEnvelopes();
+
+        // Summary calculations
+        const totalBalance = envelopes.reduce((sum, e) => sum + this.getEnvelopeBalance(e), 0);
+        const totalCcPending = envelopes.reduce((sum, e) => sum + (e.ccPending || 0), 0);
+        const totalPerPaycheck = envelopes.reduce((sum, e) => sum + this.getEnvelopePerPaycheckTarget(e), 0);
+
+        // Summary bar
+        document.getElementById('env-total-balance').textContent = this.formatCurrency(totalBalance);
+        document.getElementById('env-cc-pending').textContent = this.formatCurrency(totalCcPending);
+        document.getElementById('env-per-paycheck').textContent = this.formatCurrency(totalPerPaycheck);
+
+        // Overdrawn banner
+        const banner = document.getElementById('envelopes-overdrawn-banner');
+        if (overdrawn.length > 0) {
+            banner.style.display = 'flex';
+            const names = overdrawn.map(e => this.escapeHtml(e.name)).join(', ');
+            banner.querySelector('.warning-message').textContent = `Overdrawn envelopes: ${overdrawn.map(e => e.name).join(', ')}`;
+        } else {
+            banner.style.display = 'none';
+        }
+
+        // Envelope cards
+        const grid = document.getElementById('envelopes-grid');
+        if (envelopes.length === 0) {
+            grid.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-envelope-open-text"></i>
+                    <h3>No Envelopes Yet</h3>
+                    <p>Create envelopes to start allocating your paychecks.</p>
+                    <button class="btn-primary" onclick="app.openModal('envelope-modal')">
+                        <i class="fas fa-plus"></i> Create First Envelope
+                    </button>
+                </div>`;
+        } else {
+            grid.innerHTML = envelopes.map(env => {
+                const balance = this.getEnvelopeBalance(env);
+                const isOverdrawn = balance < -0.005;
+                const perPaycheck = this.getEnvelopePerPaycheckTarget(env);
+                const cat = env.linkedCategoryId ? this.getCategoryById(env.linkedCategoryId) : null;
+                const freqLabel = { weekly: 'wk', biweekly: '2wk', monthly: 'mo', quarterly: 'qtr', yearly: 'yr' }[env.targetFrequency] || 'mo';
+
+                // Account breakdown
+                let acctBreakdown = '';
+                const acctEntries = Object.entries(env.accountBalances || {}).filter(([, v]) => Math.abs(v) > 0.005);
+                if (acctEntries.length > 0) {
+                    acctBreakdown = acctEntries.map(([acctId, val]) => {
+                        if (acctId === '_cash') return `Cash: ${this.formatCurrency(val)}`;
+                        const acct = this.data.assets.find(a => a.id === acctId);
+                        const name = acct ? acct.name : 'Account';
+                        return `${this.escapeHtml(name)}: ${this.formatCurrency(val)}`;
+                    }).join(' &middot; ');
+                }
+
+                return `
+                    <div class="envelope-card${isOverdrawn ? ' overdrawn' : ''}">
+                        <div class="envelope-card-header">
+                            <div class="envelope-card-title">
+                                <span class="color-dot" style="background:${this.escapeHtml(env.color)}"></span>
+                                <h4>${this.escapeHtml(env.name)}</h4>
+                            </div>
+                            <div class="envelope-card-actions">
+                                <button class="btn-icon" onclick="app.editEnvelope('${env.id}')" title="Edit" aria-label="Edit envelope"><i class="fas fa-edit"></i></button>
+                                <button class="btn-icon delete" onclick="app.deleteEnvelope('${env.id}')" title="Delete" aria-label="Delete envelope"><i class="fas fa-trash"></i></button>
+                            </div>
+                        </div>
+                        <div class="envelope-balance ${isOverdrawn ? 'negative' : 'positive'}">${this.formatCurrency(balance)}</div>
+                        ${cat ? `<div class="envelope-category-link"><i class="fas fa-link"></i> ${this.escapeHtml(cat.name)}</div>` : ''}
+                        <div class="envelope-meta">
+                            <span>Target: ${this.formatCurrency(env.targetAmount)}/${freqLabel}</span>
+                            <span>Per check: ${this.formatCurrency(perPaycheck)}</span>
+                        </div>
+                        ${(env.ccPending || 0) > 0.005 ? `<div class="envelope-cc-pending"><i class="fas fa-credit-card"></i> CC pending: ${this.formatCurrency(env.ccPending)}</div>` : ''}
+                        ${acctBreakdown ? `<div class="envelope-accounts">${acctBreakdown}</div>` : ''}
+                    </div>`;
+            }).join('');
+        }
+
+        // Income sources list
+        this.renderIncomeSources();
+
+        // Paycheck history
+        this.renderPaycheckHistory();
+    }
+
+    renderIncomeSources() {
+        const container = document.getElementById('income-sources-list');
+        if (!container) return;
+        const sources = this.data.incomeSources || [];
+
+        if (sources.length === 0) {
+            container.innerHTML = '<p class="text-muted">No income sources configured.</p>';
+            return;
+        }
+
+        container.innerHTML = sources.map(s => {
+            const acct = s.defaultAccountId ? this.data.assets.find(a => a.id === s.defaultAccountId) : null;
+            const acctName = acct ? acct.name : 'Not set';
+            return `
+                <div class="income-source-item">
+                    <div class="income-source-info">
+                        <strong>${this.escapeHtml(s.name)}</strong>
+                        <span class="text-muted">Default: ${this.escapeHtml(acctName)}</span>
+                    </div>
+                    <div class="income-source-actions">
+                        <button class="btn-icon" onclick="app.editIncomeSource('${s.id}')" title="Edit" aria-label="Edit income source"><i class="fas fa-edit"></i></button>
+                        <button class="btn-icon delete" onclick="app.deleteIncomeSource('${s.id}')" title="Delete" aria-label="Delete income source"><i class="fas fa-trash"></i></button>
+                    </div>
+                </div>`;
+        }).join('');
+    }
+
+    renderPaycheckHistory() {
+        const container = document.getElementById('paycheck-history-list');
+        if (!container) return;
+        const history = (this.data.paycheckHistory || []).slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
+
+        if (history.length === 0) {
+            container.innerHTML = '<p class="text-muted">No paychecks recorded yet.</p>';
+            return;
+        }
+
+        container.innerHTML = history.map(p => {
+            const allocCount = p.allocations ? p.allocations.length : 0;
+            return `
+                <div class="paycheck-history-item">
+                    <div class="paycheck-history-info">
+                        <strong>${this.escapeHtml(p.incomeSourceName)}</strong>
+                        <span class="text-muted">${new Date(p.date).toLocaleDateString()}</span>
+                    </div>
+                    <div class="paycheck-history-details">
+                        <span class="paycheck-amount positive">${this.formatCurrency(p.totalAmount)}</span>
+                        <span class="text-muted">${allocCount} envelopes${p.unallocated > 0.005 ? `, ${this.formatCurrency(p.unallocated)} unallocated` : ''}</span>
+                    </div>
+                </div>`;
+        }).join('');
     }
 
     // ==========================================

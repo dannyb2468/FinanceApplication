@@ -700,6 +700,349 @@ body {
     text-align: right;
 }
 
+/* Envelope Budgeting Page */
+.envelope-summary-bar {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 32px;
+    padding: 24px;
+    background: var(--bg-secondary);
+    border-radius: 16px;
+    border: 1px solid var(--border-color);
+}
+
+.envelope-summary-item {
+    display: flex;
+    flex-direction: column;
+}
+
+.envelope-summary-item .label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.envelope-summary-item .value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.warning-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    margin-bottom: 24px;
+    background: var(--accent-warning-light);
+    border: 1px solid var(--accent-warning);
+    border-radius: 12px;
+    color: #92400e;
+    font-size: 0.9rem;
+}
+
+.warning-banner i {
+    color: var(--accent-warning);
+    font-size: 1.1rem;
+}
+
+[data-theme="dark"] .warning-banner {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+}
+
+.envelopes-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
+    margin-bottom: 40px;
+}
+
+.envelope-card {
+    background: var(--bg-secondary);
+    border-radius: 16px;
+    padding: 24px;
+    border: 1px solid var(--border-color);
+    transition: border-color 0.2s;
+}
+
+.envelope-card.overdrawn {
+    border-color: var(--accent-danger);
+    background: var(--accent-danger-light);
+}
+
+[data-theme="dark"] .envelope-card.overdrawn {
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.envelope-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 12px;
+}
+
+.envelope-card-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.envelope-card-title h4 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.envelope-card-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.color-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.envelope-balance {
+    font-size: 1.8rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.envelope-balance.positive {
+    color: var(--accent-success);
+}
+
+.envelope-balance.negative {
+    color: var(--accent-danger);
+}
+
+.envelope-category-link {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.envelope-category-link i {
+    margin-right: 4px;
+}
+
+.envelope-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.envelope-cc-pending {
+    font-size: 0.85rem;
+    color: var(--accent-warning);
+    margin-top: 6px;
+}
+
+.envelope-cc-pending i {
+    margin-right: 4px;
+}
+
+.envelope-accounts {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+
+/* Envelope Sections */
+.envelopes-section {
+    margin-top: 40px;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.section-header h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.section-header h3 i {
+    margin-right: 8px;
+    color: var(--text-secondary);
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+}
+
+/* Income Source Items */
+.income-source-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    margin-bottom: 8px;
+}
+
+.income-source-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.income-source-actions {
+    display: flex;
+    gap: 4px;
+}
+
+/* Paycheck History Items */
+.paycheck-history-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    margin-bottom: 8px;
+}
+
+.paycheck-history-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.paycheck-history-details {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+}
+
+.paycheck-amount.positive {
+    color: var(--accent-success);
+    font-weight: 600;
+}
+
+/* Paycheck Allocation Table */
+.paycheck-allocation-section {
+    margin: 16px 0;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.paycheck-alloc-header {
+    display: grid;
+    grid-template-columns: 1fr 100px 100px 100px;
+    gap: 8px;
+    padding: 10px 16px;
+    background: var(--bg-tertiary);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+
+.paycheck-alloc-row {
+    display: grid;
+    grid-template-columns: 1fr 100px 100px 100px;
+    gap: 8px;
+    padding: 10px 16px;
+    align-items: center;
+    border-top: 1px solid var(--border-color);
+}
+
+.paycheck-alloc-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.alloc-name {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.alloc-balance {
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-align: right;
+}
+
+.alloc-balance.positive {
+    color: var(--accent-success);
+}
+
+.alloc-balance.negative {
+    color: var(--accent-danger);
+}
+
+.alloc-input {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    text-align: right;
+}
+
+.alloc-target {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-align: right;
+}
+
+.paycheck-unallocated {
+    display: flex;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-top: 2px solid var(--border-color);
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.paycheck-unallocated-value {
+    color: var(--accent-success);
+    font-weight: 700;
+}
+
+.paycheck-unallocated-value.negative {
+    color: var(--accent-danger);
+}
+
+/* Page Header Actions */
+.page-header-actions {
+    display: flex;
+    gap: 8px;
+}
+
+/* Form Row */
+.form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+}
+
+.text-muted {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
 /* Recurring Page */
 .recurring-summary {
     display: flex;
@@ -1768,7 +2111,8 @@ body {
     }
 
     .networth-summary,
-    .recurring-summary {
+    .recurring-summary,
+    .envelope-summary-bar {
         flex-direction: column;
     }
 }
@@ -1799,6 +2143,24 @@ body {
 
     .budget-summary-bar {
         flex-direction: column;
+    }
+
+    .page-header-actions {
+        flex-wrap: wrap;
+    }
+
+    .form-row {
+        grid-template-columns: 1fr;
+    }
+
+    .paycheck-alloc-header {
+        grid-template-columns: 1fr 80px 80px 80px;
+        font-size: 0.7rem;
+    }
+
+    .paycheck-alloc-row {
+        grid-template-columns: 1fr 80px 80px 80px;
+        font-size: 0.85rem;
     }
 
     .settings-grid {
@@ -2064,6 +2426,22 @@ body {
         order: -1;
         width: 100%;
         text-align: center;
+    }
+
+    .paycheck-alloc-header {
+        grid-template-columns: 1fr 70px 70px;
+    }
+
+    .paycheck-alloc-row {
+        grid-template-columns: 1fr 70px 70px;
+    }
+
+    .alloc-target {
+        display: none;
+    }
+
+    .envelopes-grid {
+        grid-template-columns: 1fr;
     }
 }
 

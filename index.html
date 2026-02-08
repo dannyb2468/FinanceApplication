@@ -91,6 +91,10 @@
                     <i class="fas fa-piggy-bank"></i>
                     <span>Budgets</span>
                 </li>
+                <li class="nav-item" data-page="envelopes">
+                    <i class="fas fa-envelope-open-text"></i>
+                    <span>Envelopes</span>
+                </li>
                 <li class="nav-item" data-page="recurring">
                     <i class="fas fa-sync-alt"></i>
                     <span>Recurring</span>
@@ -269,6 +273,64 @@
                 </div>
 
                 <div class="budgets-grid" id="budgets-grid">
+                </div>
+            </div>
+
+            <!-- Envelopes Page -->
+            <div id="envelopes-page" class="page">
+                <div class="page-header">
+                    <h1>Envelope Budgeting</h1>
+                    <div class="page-header-actions">
+                        <button class="btn-secondary" onclick="app.openModal('envelope-transfer-modal')">
+                            <i class="fas fa-exchange-alt"></i> Transfer
+                        </button>
+                        <button class="btn-secondary" onclick="app.openModal('paycheck-modal')">
+                            <i class="fas fa-money-check-alt"></i> Record Paycheck
+                        </button>
+                        <button class="btn-primary" onclick="app.openModal('envelope-modal')">
+                            <i class="fas fa-plus"></i> Add Envelope
+                        </button>
+                    </div>
+                </div>
+
+                <div id="envelopes-overdrawn-banner" class="warning-banner" style="display:none">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <span class="warning-message"></span>
+                </div>
+
+                <div class="envelope-summary-bar">
+                    <div class="envelope-summary-item">
+                        <span class="label">Total Available</span>
+                        <span class="value" id="env-total-balance">$0.00</span>
+                    </div>
+                    <div class="envelope-summary-item">
+                        <span class="label">CC Pending</span>
+                        <span class="value" id="env-cc-pending">$0.00</span>
+                    </div>
+                    <div class="envelope-summary-item">
+                        <span class="label">Per-Paycheck Target</span>
+                        <span class="value" id="env-per-paycheck">$0.00</span>
+                    </div>
+                </div>
+
+                <div class="envelopes-grid" id="envelopes-grid">
+                </div>
+
+                <div class="envelopes-section">
+                    <div class="section-header">
+                        <h3><i class="fas fa-briefcase"></i> Income Sources</h3>
+                        <button class="btn-secondary btn-sm" onclick="app.openModal('income-source-modal')">
+                            <i class="fas fa-plus"></i> Add Source
+                        </button>
+                    </div>
+                    <div id="income-sources-list"></div>
+                </div>
+
+                <div class="envelopes-section">
+                    <div class="section-header">
+                        <h3><i class="fas fa-history"></i> Recent Paychecks</h3>
+                    </div>
+                    <div id="paycheck-history-list"></div>
                 </div>
             </div>
 
@@ -972,6 +1034,161 @@
         </div>
     </div>
 
+    <!-- Envelope Modal -->
+    <div id="envelope-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="envelope-modal-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="envelope-modal-title">Add Envelope</h2>
+                <button class="modal-close" onclick="app.closeModal('envelope-modal')" aria-label="Close">&times;</button>
+            </div>
+            <form id="envelope-form" onsubmit="app.saveEnvelope(event)">
+                <input type="hidden" id="envelope-id">
+                <div class="form-group">
+                    <label for="envelope-name">Envelope Name</label>
+                    <input type="text" id="envelope-name" required placeholder="e.g., Groceries, Car Insurance">
+                </div>
+                <div class="form-group">
+                    <label for="envelope-category">Linked Expense Category</label>
+                    <select id="envelope-category">
+                        <option value="">None (manual only)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="envelope-target">Target Amount</label>
+                    <input type="number" id="envelope-target" step="0.01" min="0" placeholder="0.00">
+                </div>
+                <div class="form-group">
+                    <label for="envelope-frequency">Target Frequency</label>
+                    <select id="envelope-frequency">
+                        <option value="weekly">Weekly</option>
+                        <option value="biweekly">Bi-Weekly</option>
+                        <option value="monthly" selected>Monthly</option>
+                        <option value="quarterly">Quarterly</option>
+                        <option value="yearly">Yearly</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="envelope-color">Color</label>
+                    <input type="color" id="envelope-color" value="#6366f1">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary" onclick="app.closeModal('envelope-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary">Save Envelope</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Paycheck Modal -->
+    <div id="paycheck-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="paycheck-modal-title">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2 id="paycheck-modal-title">Record Paycheck</h2>
+                <button class="modal-close" onclick="app.closeModal('paycheck-modal')" aria-label="Close">&times;</button>
+            </div>
+            <form id="paycheck-form" onsubmit="app.savePaycheck(event)">
+                <div class="form-group">
+                    <label for="paycheck-source">Income Source</label>
+                    <select id="paycheck-source" onchange="app.onPaycheckSourceChange()">
+                        <option value="">Select income source...</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="paycheck-amount">Total Amount</label>
+                        <input type="number" id="paycheck-amount" step="0.01" min="0" required placeholder="0.00" oninput="app.updatePaycheckUnallocated()">
+                    </div>
+                    <div class="form-group">
+                        <label for="paycheck-account">Deposit Account</label>
+                        <select id="paycheck-account">
+                            <option value="">Select account...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="paycheck-date">Date</label>
+                        <input type="date" id="paycheck-date" required>
+                    </div>
+                </div>
+                <div class="paycheck-allocation-section">
+                    <div class="paycheck-alloc-header">
+                        <span>Envelope</span>
+                        <span>Balance</span>
+                        <span>Allocate</span>
+                        <span>Target</span>
+                    </div>
+                    <div id="paycheck-allocations"></div>
+                    <div class="paycheck-unallocated">
+                        <span>Unallocated:</span>
+                        <span id="paycheck-unallocated" class="paycheck-unallocated-value">$0.00</span>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary" onclick="app.closeModal('paycheck-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary">Record Paycheck</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Income Source Modal -->
+    <div id="income-source-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="income-source-modal-title">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h2 id="income-source-modal-title">Add Income Source</h2>
+                <button class="modal-close" onclick="app.closeModal('income-source-modal')" aria-label="Close">&times;</button>
+            </div>
+            <form id="income-source-form" onsubmit="app.saveIncomeSource(event)">
+                <input type="hidden" id="income-source-id">
+                <div class="form-group">
+                    <label for="income-source-name">Source Name</label>
+                    <input type="text" id="income-source-name" required placeholder="e.g., Main Job, Uber, Walmart Spark">
+                </div>
+                <div class="form-group">
+                    <label for="income-source-account">Default Deposit Account</label>
+                    <select id="income-source-account">
+                        <option value="">None</option>
+                    </select>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary" onclick="app.closeModal('income-source-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary">Save Source</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Envelope Transfer Modal -->
+    <div id="envelope-transfer-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="envelope-transfer-modal-title">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h2 id="envelope-transfer-modal-title">Transfer Between Envelopes</h2>
+                <button class="modal-close" onclick="app.closeModal('envelope-transfer-modal')" aria-label="Close">&times;</button>
+            </div>
+            <form id="envelope-transfer-form" onsubmit="app.saveEnvelopeTransfer(event)">
+                <div class="form-group">
+                    <label for="transfer-from-envelope">From Envelope</label>
+                    <select id="transfer-from-envelope" required>
+                        <option value="">Select envelope...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="transfer-to-envelope">To Envelope</label>
+                    <select id="transfer-to-envelope" required>
+                        <option value="">Select envelope...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="envelope-transfer-amount">Amount</label>
+                    <input type="number" id="envelope-transfer-amount" step="0.01" min="0" required placeholder="0.00">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary" onclick="app.closeModal('envelope-transfer-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary">Transfer</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Mobile Bottom Navigation -->
     <nav class="mobile-nav">
         <button class="mobile-nav-item active" data-page="dashboard">
@@ -999,6 +1216,10 @@
     <!-- Mobile More Menu -->
     <div id="mobile-more-menu" class="mobile-more-menu">
         <div class="mobile-more-content">
+            <button class="mobile-more-item" data-page="envelopes">
+                <i class="fas fa-envelope-open-text"></i>
+                <span>Envelopes</span>
+            </button>
             <button class="mobile-more-item" data-page="recurring">
                 <i class="fas fa-sync-alt"></i>
                 <span>Recurring</span>
