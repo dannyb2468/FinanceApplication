@@ -24,6 +24,40 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="styles.css">
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBwMWhiUNZ5XxR3SMW6hId42ljPCYFZOjI",
+            authDomain: "financeflow-b93f4.firebaseapp.com",
+            projectId: "financeflow-b93f4",
+            storageBucket: "financeflow-b93f4.firebasestorage.app",
+            messagingSenderId: "433074497981",
+            appId: "1:433074497981:web:b4edcc9d0d02e07b54cad4"
+        };
+
+        const firebaseApp = initializeApp(firebaseConfig);
+        const auth = getAuth(firebaseApp);
+        const db = getFirestore(firebaseApp);
+
+        // Expose to global scope for app.js
+        window.firebaseAuth = auth;
+        window.firebaseDb = db;
+        window.firebaseFunctions = {
+            signInWithEmailAndPassword,
+            createUserWithEmailAndPassword,
+            signOut,
+            onAuthStateChanged,
+            doc,
+            setDoc,
+            getDoc,
+            onSnapshot
+        };
+    </script>
 </head>
 <body>
     <div class="app-container">
@@ -75,6 +109,22 @@
                 </li>
             </ul>
             <div class="sidebar-footer">
+                <div id="user-section" style="display: none;">
+                    <div class="user-info">
+                        <i class="fas fa-user-circle"></i>
+                        <span id="user-email">user@email.com</span>
+                    </div>
+                    <div class="sync-status" id="sync-status">
+                        <i class="fas fa-cloud"></i>
+                        <span>Synced</span>
+                    </div>
+                    <button class="btn-signout" onclick="app.signOut()">
+                        <i class="fas fa-sign-out-alt"></i> Sign Out
+                    </button>
+                </div>
+                <button id="sign-in-btn" class="btn-export" onclick="app.openModal('auth-modal')">
+                    <i class="fas fa-sign-in-alt"></i> Sign In to Sync
+                </button>
                 <button class="btn-export" onclick="app.exportData()">
                     <i class="fas fa-download"></i> Export Data
                 </button>
@@ -643,6 +693,34 @@
                 <button class="btn-secondary" onclick="app.closeModal('confirm-dialog')">Cancel</button>
                 <button class="btn-danger" id="confirm-action-btn">Confirm</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Auth Modal -->
+    <div id="auth-modal" class="modal">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h2 id="auth-modal-title">Sign In</h2>
+                <button class="modal-close" onclick="app.closeModal('auth-modal')">&times;</button>
+            </div>
+            <form id="auth-form" onsubmit="app.handleAuth(event)">
+                <div class="form-group">
+                    <label for="auth-email">Email</label>
+                    <input type="email" id="auth-email" required placeholder="your@email.com">
+                </div>
+                <div class="form-group">
+                    <label for="auth-password">Password</label>
+                    <input type="password" id="auth-password" required placeholder="Your password" minlength="6">
+                </div>
+                <div id="auth-error" class="auth-error"></div>
+                <div class="modal-actions" style="flex-direction: column; gap: 12px;">
+                    <button type="submit" class="btn-primary" style="width: 100%;" id="auth-submit-btn">Sign In</button>
+                    <p style="text-align: center; color: var(--text-secondary); margin: 0;">
+                        <span id="auth-toggle-text">Don't have an account?</span>
+                        <a href="#" onclick="app.toggleAuthMode(event)" id="auth-toggle-link">Sign Up</a>
+                    </p>
+                </div>
+            </form>
         </div>
     </div>
 

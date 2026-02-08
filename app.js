@@ -19,6 +19,11 @@ class FinanceApp {
         };
 
         this.charts = {};
+        this.currentUser = null;
+        this.authMode = 'signin'; // 'signin' or 'signup'
+        this.unsubscribeFirestore = null;
+        this.isSyncing = false;
+
         this.defaultCategories = [
             { id: 'salary', name: 'Salary', color: '#10b981', type: 'income' },
             { id: 'freelance', name: 'Freelance', color: '#059669', type: 'income' },
@@ -57,10 +62,172 @@ class FinanceApp {
         this.processRecurringTransactions();
         this.renderAll();
         this.setupFormListeners();
+        this.setupAuth();
 
         // Set default date to today
         document.getElementById('trans-date').valueAsDate = new Date();
         document.getElementById('rec-next-date').valueAsDate = new Date();
+    }
+
+    // ==========================================
+    // FIREBASE AUTH & SYNC
+    // ==========================================
+
+    setupAuth() {
+        const checkFirebase = setInterval(() => {
+            if (window.firebaseAuth && window.firebaseFunctions) {
+                clearInterval(checkFirebase);
+                const { onAuthStateChanged } = window.firebaseFunctions;
+
+                onAuthStateChanged(window.firebaseAuth, (user) => {
+                    if (user) {
+                        this.currentUser = user;
+                        this.onUserSignedIn(user);
+                    } else {
+                        this.currentUser = null;
+                        this.onUserSignedOut();
+                    }
+                });
+            }
+        }, 100);
+    }
+
+    onUserSignedIn(user) {
+        document.getElementById('user-section').style.display = 'block';
+        document.getElementById('sign-in-btn').style.display = 'none';
+        document.getElementById('user-email').textContent = user.email;
+        this.startFirestoreSync();
+        this.showToast('Signed in as ' + user.email, 'success');
+    }
+
+    onUserSignedOut() {
+        document.getElementById('user-section').style.display = 'none';
+        document.getElementById('sign-in-btn').style.display = 'block';
+        if (this.unsubscribeFirestore) {
+            this.unsubscribeFirestore();
+            this.unsubscribeFirestore = null;
+        }
+    }
+
+    async handleAuth(event) {
+        event.preventDefault();
+        const email = document.getElementById('auth-email').value;
+        const password = document.getElementById('auth-password').value;
+        const errorEl = document.getElementById('auth-error');
+
+        try {
+            errorEl.textContent = '';
+            const { signInWithEmailAndPassword, createUserWithEmailAndPassword } = window.firebaseFunctions;
+
+            if (this.authMode === 'signin') {
+                await signInWithEmailAndPassword(window.firebaseAuth, email, password);
+            } else {
+                await createUserWithEmailAndPassword(window.firebaseAuth, email, password);
+            }
+            this.closeModal('auth-modal');
+            document.getElementById('auth-form').reset();
+        } catch (error) {
+            let message = 'An error occurred';
+            if (error.code === 'auth/user-not-found') message = 'No account found with this email';
+            else if (error.code === 'auth/wrong-password') message = 'Incorrect password';
+            else if (error.code === 'auth/email-already-in-use') message = 'Email already in use';
+            else if (error.code === 'auth/weak-password') message = 'Password should be at least 6 characters';
+            else if (error.code === 'auth/invalid-email') message = 'Invalid email address';
+            else if (error.code === 'auth/invalid-credential') message = 'Invalid email or password';
+            errorEl.textContent = message;
+        }
+    }
+
+    toggleAuthMode(event) {
+        event.preventDefault();
+        if (this.authMode === 'signin') {
+            this.authMode = 'signup';
+            document.getElementById('auth-modal-title').textContent = 'Create Account';
+            document.getElementById('auth-submit-btn').textContent = 'Sign Up';
+            document.getElementById('auth-toggle-text').textContent = 'Already have an account?';
+            document.getElementById('auth-toggle-link').textContent = 'Sign In';
+        } else {
+            this.authMode = 'signin';
+            document.getElementById('auth-modal-title').textContent = 'Sign In';
+            document.getElementById('auth-submit-btn').textContent = 'Sign In';
+            document.getElementById('auth-toggle-text').textContent = "Don't have an account?";
+            document.getElementById('auth-toggle-link').textContent = 'Sign Up';
+        }
+        document.getElementById('auth-error').textContent = '';
+    }
+
+    async signOut() {
+        try {
+            const { signOut } = window.firebaseFunctions;
+            await signOut(window.firebaseAuth);
+            this.showToast('Signed out', 'success');
+        } catch (error) {
+            this.showToast('Error signing out', 'error');
+        }
+    }
+
+    startFirestoreSync() {
+        if (!this.currentUser) return;
+        const { doc, onSnapshot } = window.firebaseFunctions;
+        const userDocRef = doc(window.firebaseDb, 'users', this.currentUser.uid);
+
+        this.updateSyncStatus('syncing');
+
+        this.unsubscribeFirestore = onSnapshot(userDocRef, (docSnapshot) => {
+            if (docSnapshot.exists()) {
+                const cloudData = docSnapshot.data();
+                if (cloudData.data) {
+                    this.data = { ...this.data, ...cloudData.data };
+                    this.saveDataLocal();
+                    this.renderAll();
+                }
+            } else {
+                this.syncToCloud();
+            }
+            this.updateSyncStatus('synced');
+        }, (error) => {
+            console.error('Firestore sync error:', error);
+            this.updateSyncStatus('error');
+        });
+    }
+
+    async syncToCloud() {
+        if (!this.currentUser || this.isSyncing) return;
+        this.isSyncing = true;
+        this.updateSyncStatus('syncing');
+
+        try {
+            const { doc, setDoc } = window.firebaseFunctions;
+            const userDocRef = doc(window.firebaseDb, 'users', this.currentUser.uid);
+            await setDoc(userDocRef, {
+                data: this.data,
+                updatedAt: new Date().toISOString(),
+                email: this.currentUser.email
+            });
+            this.updateSyncStatus('synced');
+        } catch (error) {
+            console.error('Error syncing to cloud:', error);
+            this.updateSyncStatus('error');
+        } finally {
+            this.isSyncing = false;
+        }
+    }
+
+    updateSyncStatus(status) {
+        const el = document.getElementById('sync-status');
+        if (!el) return;
+        el.className = 'sync-status ' + status;
+        if (status === 'syncing') {
+            el.innerHTML = '<i class="fas fa-sync fa-spin"></i><span>Syncing...</span>';
+        } else if (status === 'synced') {
+            el.innerHTML = '<i class="fas fa-cloud"></i><span>Synced</span>';
+        } else {
+            el.innerHTML = '<i class="fas fa-exclamation-triangle"></i><span>Sync error</span>';
+        }
+    }
+
+    saveDataLocal() {
+        localStorage.setItem('financeflow_data', JSON.stringify(this.data));
     }
 
     loadData() {
@@ -73,6 +240,10 @@ class FinanceApp {
 
     saveData() {
         localStorage.setItem('financeflow_data', JSON.stringify(this.data));
+        // Sync to cloud if signed in
+        if (this.currentUser) {
+            this.syncToCloud();
+        }
     }
 
     initializeCategories() {
