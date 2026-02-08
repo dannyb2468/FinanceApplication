@@ -67,7 +67,7 @@
                 <i class="fas fa-wallet"></i>
                 <span>FinanceFlow</span>
             </div>
-            <button class="mobile-menu-btn" onclick="app.toggleSidebar()">
+            <button class="mobile-menu-btn" onclick="app.toggleSidebar()" aria-label="Toggle navigation menu">
                 <i class="fas fa-bars"></i>
             </button>
         </header>
@@ -502,11 +502,11 @@
     </div>
 
     <!-- Transaction Modal -->
-    <div id="transaction-modal" class="modal">
+    <div id="transaction-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="transaction-modal-title">
         <div class="modal-content">
             <div class="modal-header">
                 <h2 id="transaction-modal-title">Add Transaction</h2>
-                <button class="modal-close" onclick="app.closeModal('transaction-modal')">&times;</button>
+                <button class="modal-close" onclick="app.closeModal('transaction-modal')" aria-label="Close">&times;</button>
             </div>
             <form id="transaction-form" onsubmit="app.saveTransaction(event)">
                 <input type="hidden" id="transaction-id">
@@ -564,11 +564,11 @@
     </div>
 
     <!-- Budget Modal -->
-    <div id="budget-modal" class="modal">
+    <div id="budget-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="budget-modal-title">
         <div class="modal-content">
             <div class="modal-header">
                 <h2 id="budget-modal-title">Create Budget</h2>
-                <button class="modal-close" onclick="app.closeModal('budget-modal')">&times;</button>
+                <button class="modal-close" onclick="app.closeModal('budget-modal')" aria-label="Close">&times;</button>
             </div>
             <form id="budget-form" onsubmit="app.saveBudget(event)">
                 <input type="hidden" id="budget-id">
@@ -589,11 +589,11 @@
     </div>
 
     <!-- Recurring Modal -->
-    <div id="recurring-modal" class="modal">
+    <div id="recurring-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="recurring-modal-title">
         <div class="modal-content">
             <div class="modal-header">
                 <h2 id="recurring-modal-title">Add Recurring Transaction</h2>
-                <button class="modal-close" onclick="app.closeModal('recurring-modal')">&times;</button>
+                <button class="modal-close" onclick="app.closeModal('recurring-modal')" aria-label="Close">&times;</button>
             </div>
             <form id="recurring-form" onsubmit="app.saveRecurring(event)">
                 <input type="hidden" id="recurring-id">
@@ -641,11 +641,11 @@
     </div>
 
     <!-- Asset/Liability Modal -->
-    <div id="asset-modal" class="modal">
+    <div id="asset-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="asset-modal-title">
         <div class="modal-content">
             <div class="modal-header">
                 <h2 id="asset-modal-title">Add Asset/Liability</h2>
-                <button class="modal-close" onclick="app.closeModal('asset-modal')">&times;</button>
+                <button class="modal-close" onclick="app.closeModal('asset-modal')" aria-label="Close">&times;</button>
             </div>
             <form id="asset-form" onsubmit="app.saveAsset(event)">
                 <input type="hidden" id="asset-id">
@@ -763,11 +763,11 @@
     </div>
 
     <!-- Contribution Modal -->
-    <div id="contribution-modal" class="modal">
+    <div id="contribution-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="contribution-modal-title">
         <div class="modal-content modal-small">
             <div class="modal-header">
-                <h2>Add Contribution</h2>
-                <button class="modal-close" onclick="app.closeModal('contribution-modal')">&times;</button>
+                <h2 id="contribution-modal-title">Add Contribution</h2>
+                <button class="modal-close" onclick="app.closeModal('contribution-modal')" aria-label="Close">&times;</button>
             </div>
             <form id="contribution-form" onsubmit="app.saveContribution(event)">
                 <input type="hidden" id="contribution-asset-id">
@@ -806,11 +806,11 @@
     </div>
 
     <!-- Debt Payment Modal -->
-    <div id="payment-modal" class="modal">
+    <div id="payment-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="payment-modal-title">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>Make Payment</h2>
-                <button class="modal-close" onclick="app.closeModal('payment-modal')">&times;</button>
+                <h2 id="payment-modal-title">Make Payment</h2>
+                <button class="modal-close" onclick="app.closeModal('payment-modal')" aria-label="Close">&times;</button>
             </div>
             <form id="payment-form" onsubmit="app.saveDebtPayment(event)">
                 <input type="hidden" id="payment-debt-id">
@@ -855,11 +855,11 @@
     </div>
 
     <!-- Withdrawal Modal -->
-    <div id="withdrawal-modal" class="modal">
+    <div id="withdrawal-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="withdrawal-modal-title">
         <div class="modal-content modal-small">
             <div class="modal-header">
-                <h2>Withdraw Funds</h2>
-                <button class="modal-close" onclick="app.closeModal('withdrawal-modal')">&times;</button>
+                <h2 id="withdrawal-modal-title">Withdraw Funds</h2>
+                <button class="modal-close" onclick="app.closeModal('withdrawal-modal')" aria-label="Close">&times;</button>
             </div>
             <form id="withdrawal-form" onsubmit="app.saveWithdrawal(event)">
                 <input type="hidden" id="withdrawal-asset-id">
@@ -896,11 +896,11 @@
     </div>
 
     <!-- Account Details Modal -->
-    <div id="account-details-modal" class="modal">
+    <div id="account-details-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="account-details-title">
         <div class="modal-content modal-large">
             <div class="modal-header">
                 <h2 id="account-details-title">Account Details</h2>
-                <button class="modal-close" onclick="app.closeModal('account-details-modal')">&times;</button>
+                <button class="modal-close" onclick="app.closeModal('account-details-modal')" aria-label="Close">&times;</button>
             </div>
             <div class="account-details-content">
                 <div class="account-summary" id="account-summary"></div>
@@ -912,11 +912,11 @@
     </div>
 
     <!-- Confirm Dialog -->
-    <div id="confirm-dialog" class="modal">
+    <div id="confirm-dialog" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
         <div class="modal-content modal-small">
             <div class="modal-header">
                 <h2 id="confirm-title">Confirm</h2>
-                <button class="modal-close" onclick="app.closeModal('confirm-dialog')">&times;</button>
+                <button class="modal-close" onclick="app.closeModal('confirm-dialog')" aria-label="Close">&times;</button>
             </div>
             <p id="confirm-message"></p>
             <div class="modal-actions">
@@ -927,11 +927,11 @@
     </div>
 
     <!-- Auth Modal -->
-    <div id="auth-modal" class="modal">
+    <div id="auth-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
         <div class="modal-content modal-small">
             <div class="modal-header">
                 <h2 id="auth-modal-title">Sign In</h2>
-                <button class="modal-close" onclick="app.closeModal('auth-modal')">&times;</button>
+                <button class="modal-close" onclick="app.closeModal('auth-modal')" aria-label="Close">&times;</button>
             </div>
             <form id="auth-form" onsubmit="app.handleAuth(event)">
                 <div class="form-group">

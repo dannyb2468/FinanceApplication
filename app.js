@@ -23,6 +23,8 @@ class FinanceApp {
         this.authMode = 'signin'; // 'signin' or 'signup'
         this.unsubscribeFirestore = null;
         this.isSyncing = false;
+        this.transactionPage = 1;
+        this.transactionsPerPage = 25;
 
         this.defaultCategories = [
             { id: 'salary', name: 'Salary', color: '#10b981', type: 'income' },
@@ -47,6 +49,20 @@ class FinanceApp {
         ];
 
         this.init();
+    }
+
+    // ==========================================
+    // UTILITIES
+    // ==========================================
+
+    escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     // ==========================================
@@ -456,8 +472,8 @@ class FinanceApp {
         if (assets.length > 0) {
             assetsHtml = '<optgroup label="Bank & Investment Accounts">';
             assets.forEach(a => {
-                const displayName = a.institution ? `${a.name} (${a.institution})` : a.name;
-                assetsHtml += `<option value="${a.id}">${displayName}</option>`;
+                const displayName = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
+                assetsHtml += `<option value="${this.escapeHtml(a.id)}">${displayName}</option>`;
             });
             assetsHtml += '</optgroup>';
         }
@@ -467,8 +483,8 @@ class FinanceApp {
         if (liabilities.length > 0) {
             liabilitiesHtml = '<optgroup label="Credit Cards & Loans">';
             liabilities.forEach(a => {
-                const displayName = a.institution ? `${a.name} (${a.institution})` : a.name;
-                liabilitiesHtml += `<option value="${a.id}">${displayName}</option>`;
+                const displayName = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
+                liabilitiesHtml += `<option value="${this.escapeHtml(a.id)}">${displayName}</option>`;
             });
             liabilitiesHtml += '</optgroup>';
         }
@@ -537,7 +553,11 @@ class FinanceApp {
     // ==========================================
 
     openModal(modalId) {
-        document.getElementById(modalId).classList.add('active');
+        const modal = document.getElementById(modalId);
+        modal.classList.add('active');
+
+        // Save the element that had focus before modal opened
+        this._previousFocus = document.activeElement;
 
         // Populate category selects when opening modals
         if (modalId === 'transaction-modal') {
@@ -548,10 +568,60 @@ class FinanceApp {
         } else if (modalId === 'budget-modal') {
             this.populateBudgetCategories();
         }
+
+        // Focus the first focusable element inside the modal
+        setTimeout(() => {
+            const focusable = modal.querySelectorAll('input:not([type="hidden"]):not([hidden]), select, textarea, button, [tabindex]:not([tabindex="-1"])');
+            if (focusable.length > 0) {
+                focusable[0].focus();
+            }
+        }, 100);
+
+        // Set up focus trap and Escape key handler
+        this._modalKeyHandler = (e) => {
+            if (e.key === 'Escape') {
+                this.closeModal(modalId);
+                return;
+            }
+            if (e.key === 'Tab') {
+                const focusable = modal.querySelectorAll('input:not([type="hidden"]):not([hidden]), select, textarea, button, [tabindex]:not([tabindex="-1"])');
+                const focusArray = Array.from(focusable).filter(el => el.offsetParent !== null);
+                if (focusArray.length === 0) return;
+
+                const first = focusArray[0];
+                const last = focusArray[focusArray.length - 1];
+
+                if (e.shiftKey) {
+                    if (document.activeElement === first) {
+                        e.preventDefault();
+                        last.focus();
+                    }
+                } else {
+                    if (document.activeElement === last) {
+                        e.preventDefault();
+                        first.focus();
+                    }
+                }
+            }
+        };
+        document.addEventListener('keydown', this._modalKeyHandler);
     }
 
     closeModal(modalId) {
         document.getElementById(modalId).classList.remove('active');
+
+        // Remove focus trap handler
+        if (this._modalKeyHandler) {
+            document.removeEventListener('keydown', this._modalKeyHandler);
+            this._modalKeyHandler = null;
+        }
+
+        // Restore focus to the element that had focus before modal opened
+        if (this._previousFocus && typeof this._previousFocus.focus === 'function') {
+            this._previousFocus.focus();
+            this._previousFocus = null;
+        }
+
         // Reset forms
         const form = document.querySelector(`#${modalId} form`);
         if (form) form.reset();
@@ -583,7 +653,7 @@ class FinanceApp {
         const filterCat = document.getElementById('filter-category');
         filterCat.innerHTML = '<option value="all">All Categories</option>';
         this.data.categories.forEach(cat => {
-            filterCat.innerHTML += `<option value="${cat.id}">${cat.name}</option>`;
+            filterCat.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
         });
     }
 
@@ -595,7 +665,7 @@ class FinanceApp {
         this.data.categories
             .filter(c => c.type === type)
             .forEach(cat => {
-                select.innerHTML += `<option value="${cat.id}">${cat.name}</option>`;
+                select.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
             });
     }
 
@@ -607,7 +677,7 @@ class FinanceApp {
         this.data.categories
             .filter(c => c.type === type)
             .forEach(cat => {
-                select.innerHTML += `<option value="${cat.id}">${cat.name}</option>`;
+                select.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
             });
     }
 
@@ -621,7 +691,7 @@ class FinanceApp {
         this.data.categories
             .filter(c => c.type === 'expense' && !existingBudgetCategories.includes(c.id))
             .forEach(cat => {
-                select.innerHTML += `<option value="${cat.id}">${cat.name}</option>`;
+                select.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
             });
     }
 
@@ -675,12 +745,26 @@ class FinanceApp {
         const id = document.getElementById('transaction-id').value || Date.now().toString();
         const type = document.querySelector('input[name="trans-type"]:checked').value;
         const amount = parseFloat(document.getElementById('trans-amount').value);
-        const description = document.getElementById('trans-description').value;
+        const description = document.getElementById('trans-description').value.trim();
         const categoryId = type === 'transfer' ? null : document.getElementById('trans-category').value;
         const date = document.getElementById('trans-date').value;
         const notes = document.getElementById('trans-notes').value;
         const fromAccountId = document.getElementById('trans-from-account').value || null;
         const toAccountId = document.getElementById('trans-to-account').value || null;
+
+        // Validation
+        if (!amount || amount <= 0) {
+            this.showToast('Amount must be greater than 0', 'error');
+            return;
+        }
+        if (!description) {
+            this.showToast('Description cannot be empty', 'error');
+            return;
+        }
+        if (!date) {
+            this.showToast('Date is required', 'error');
+            return;
+        }
 
         const transaction = {
             id,
@@ -923,6 +1007,16 @@ class FinanceApp {
         this.openModal('transaction-modal');
     }
 
+    confirmAction(title, message, callback) {
+        document.getElementById('confirm-title').textContent = title;
+        document.getElementById('confirm-message').textContent = message;
+        document.getElementById('confirm-action-btn').onclick = () => {
+            this.closeModal('confirm-dialog');
+            callback();
+        };
+        this.openModal('confirm-dialog');
+    }
+
     deleteTransaction(id) {
         const transaction = this.data.transactions.find(t => t.id === id);
         if (transaction) {
@@ -940,6 +1034,7 @@ class FinanceApp {
     }
 
     filterTransactions() {
+        this.transactionPage = 1;
         this.renderTransactions();
     }
 
@@ -980,9 +1075,9 @@ class FinanceApp {
 
     renderTransactions() {
         const tbody = document.getElementById('transactions-tbody');
-        const transactions = this.getFilteredTransactions();
+        const allTransactions = this.getFilteredTransactions();
 
-        if (transactions.length === 0) {
+        if (allTransactions.length === 0) {
             tbody.innerHTML = `
                 <tr>
                     <td colspan="5">
@@ -993,8 +1088,18 @@ class FinanceApp {
                     </td>
                 </tr>
             `;
+            // Remove pagination if present
+            const existingPagination = document.getElementById('transactions-pagination');
+            if (existingPagination) existingPagination.innerHTML = '';
             return;
         }
+
+        // Pagination
+        const totalPages = Math.ceil(allTransactions.length / this.transactionsPerPage);
+        if (this.transactionPage > totalPages) this.transactionPage = totalPages;
+        if (this.transactionPage < 1) this.transactionPage = 1;
+        const startIdx = (this.transactionPage - 1) * this.transactionsPerPage;
+        const transactions = allTransactions.slice(startIdx, startIdx + this.transactionsPerPage);
 
         tbody.innerHTML = transactions.map(t => {
             let category;
@@ -1030,16 +1135,16 @@ class FinanceApp {
             if (t.type === 'transfer' || t.type === 'payment') {
                 const fromAccount = t.fromAccountId ? this.data.assets.find(a => a.id === t.fromAccountId) : null;
                 const toAccount = t.toAccountId ? this.data.assets.find(a => a.id === t.toAccountId) : null;
-                const fromName = fromAccount ? fromAccount.name : 'External';
-                const toName = toAccount ? toAccount.name : 'External';
+                const fromName = fromAccount ? this.escapeHtml(fromAccount.name) : 'External';
+                const toName = toAccount ? this.escapeHtml(toAccount.name) : 'External';
                 const icon = t.type === 'payment' ? 'credit-card' : 'exchange-alt';
-                accountInfo = `<span class="transaction-account"><i class="fas fa-${icon}"></i> ${fromName} → ${toName}</span>`;
+                accountInfo = `<span class="transaction-account"><i class="fas fa-${icon}"></i> ${fromName} &rarr; ${toName}</span>`;
             } else if (t.fromAccountId || t.toAccountId) {
                 const accountId = t.fromAccountId || t.toAccountId;
                 const account = this.data.assets.find(a => a.id === accountId);
                 if (account) {
                     const icon = account.type === 'liability' ? 'credit-card' : 'university';
-                    accountInfo = `<span class="transaction-account"><i class="fas fa-${icon}"></i> ${account.name}</span>`;
+                    accountInfo = `<span class="transaction-account"><i class="fas fa-${icon}"></i> ${this.escapeHtml(account.name)}</span>`;
                 }
             }
 
@@ -1047,27 +1152,64 @@ class FinanceApp {
                 <tr>
                     <td>${formattedDate}</td>
                     <td>
-                        ${t.description}
+                        ${this.escapeHtml(t.description)}
                         ${accountInfo}
                     </td>
                     <td>
                         <span style="display: inline-flex; align-items: center; gap: 8px;">
-                            <span style="width: 10px; height: 10px; border-radius: 50%; background: ${category.color}"></span>
-                            ${category.name}
+                            <span style="width: 10px; height: 10px; border-radius: 50%; background: ${this.escapeHtml(category.color)}"></span>
+                            ${this.escapeHtml(category.name)}
                         </span>
                     </td>
                     <td class="transaction-amount ${amountClass}">${amountPrefix}${this.formatCurrency(t.amount)}</td>
                     <td>
-                        <button class="btn-icon" onclick="app.editTransaction('${t.id}')" title="Edit">
+                        <button class="btn-icon" onclick="app.editTransaction('${t.id}')" title="Edit" aria-label="Edit transaction">
                             <i class="fas fa-edit"></i>
                         </button>
-                        <button class="btn-icon delete" onclick="app.deleteTransaction('${t.id}')" title="Delete">
+                        <button class="btn-icon delete" onclick="app.confirmAction('Delete Transaction', 'Are you sure you want to delete this transaction?', () => app.deleteTransaction('${t.id}'))" title="Delete" aria-label="Delete transaction">
                             <i class="fas fa-trash"></i>
                         </button>
                     </td>
                 </tr>
             `;
         }).join('');
+
+        // Render pagination controls
+        this.renderTransactionPagination(allTransactions.length, totalPages);
+    }
+
+    renderTransactionPagination(totalItems, totalPages) {
+        let paginationEl = document.getElementById('transactions-pagination');
+        if (!paginationEl) {
+            // Create pagination container dynamically after the table card
+            const tableCard = document.getElementById('transactions-table').closest('.card');
+            paginationEl = document.createElement('div');
+            paginationEl.id = 'transactions-pagination';
+            paginationEl.className = 'pagination-controls';
+            tableCard.appendChild(paginationEl);
+        }
+
+        if (totalPages <= 1) {
+            paginationEl.innerHTML = '';
+            return;
+        }
+
+        paginationEl.innerHTML = `
+            <button class="btn-secondary pagination-btn" onclick="app.goToTransactionPage(${this.transactionPage - 1})" ${this.transactionPage <= 1 ? 'disabled' : ''}>
+                <i class="fas fa-chevron-left"></i> Prev
+            </button>
+            <span class="pagination-info">Page ${this.transactionPage} of ${totalPages} (${totalItems} transactions)</span>
+            <button class="btn-secondary pagination-btn" onclick="app.goToTransactionPage(${this.transactionPage + 1})" ${this.transactionPage >= totalPages ? 'disabled' : ''}>
+                Next <i class="fas fa-chevron-right"></i>
+            </button>
+        `;
+    }
+
+    goToTransactionPage(page) {
+        this.transactionPage = page;
+        this.renderTransactions();
+        // Scroll to top of transactions table
+        document.getElementById('transactions-table').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     // ==========================================
@@ -1080,6 +1222,12 @@ class FinanceApp {
         const id = document.getElementById('budget-id').value || Date.now().toString();
         const categoryId = document.getElementById('budget-category').value;
         const amount = parseFloat(document.getElementById('budget-amount').value);
+
+        // Validation
+        if (!amount || amount <= 0) {
+            this.showToast('Budget amount must be greater than 0', 'error');
+            return;
+        }
 
         const budget = {
             id,
@@ -1113,7 +1261,7 @@ class FinanceApp {
         // Temporarily add the current category to the select
         const select = document.getElementById('budget-category');
         const category = this.getCategoryById(budget.categoryId);
-        select.innerHTML = `<option value="${budget.categoryId}">${category.name}</option>`;
+        select.innerHTML = `<option value="${this.escapeHtml(budget.categoryId)}">${this.escapeHtml(category.name)}</option>`;
 
         document.getElementById('budget-amount').value = budget.amount;
 
@@ -1184,14 +1332,14 @@ class FinanceApp {
                 <div class="budget-card">
                     <div class="budget-card-header">
                         <div class="budget-card-title">
-                            <span class="category-dot" style="background: ${category.color}"></span>
-                            <h4>${category.name}</h4>
+                            <span class="category-dot" style="background: ${this.escapeHtml(category.color)}"></span>
+                            <h4>${this.escapeHtml(category.name)}</h4>
                         </div>
                         <div class="budget-card-actions">
-                            <button class="btn-icon" onclick="app.editBudget('${b.id}')" title="Edit">
+                            <button class="btn-icon" onclick="app.editBudget('${b.id}')" title="Edit" aria-label="Edit budget">
                                 <i class="fas fa-edit"></i>
                             </button>
-                            <button class="btn-icon delete" onclick="app.deleteBudget('${b.id}')" title="Delete">
+                            <button class="btn-icon delete" onclick="app.confirmAction('Delete Budget', 'Are you sure you want to delete this budget?', () => app.deleteBudget('${b.id}'))" title="Delete" aria-label="Delete budget">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </div>
@@ -1220,11 +1368,21 @@ class FinanceApp {
 
         const id = document.getElementById('recurring-id').value || Date.now().toString();
         const type = document.querySelector('input[name="rec-type"]:checked').value;
-        const name = document.getElementById('rec-name').value;
+        const name = document.getElementById('rec-name').value.trim();
         const amount = parseFloat(document.getElementById('rec-amount').value);
         const categoryId = document.getElementById('rec-category').value;
         const frequency = document.getElementById('rec-frequency').value;
         const nextDate = document.getElementById('rec-next-date').value;
+
+        // Validation
+        if (!amount || amount <= 0) {
+            this.showToast('Amount must be greater than 0', 'error');
+            return;
+        }
+        if (!name) {
+            this.showToast('Name cannot be empty', 'error');
+            return;
+        }
 
         const recurring = {
             id,
@@ -1388,21 +1546,21 @@ class FinanceApp {
 
             return `
                 <tr>
-                    <td>${r.name}</td>
+                    <td>${this.escapeHtml(r.name)}</td>
                     <td>
                         <span style="display: inline-flex; align-items: center; gap: 8px;">
-                            <span style="width: 10px; height: 10px; border-radius: 50%; background: ${category.color}"></span>
-                            ${category.name}
+                            <span style="width: 10px; height: 10px; border-radius: 50%; background: ${this.escapeHtml(category.color)}"></span>
+                            ${this.escapeHtml(category.name)}
                         </span>
                     </td>
                     <td class="transaction-amount ${amountClass}">${amountPrefix}${this.formatCurrency(r.amount)}</td>
-                    <td style="text-transform: capitalize;">${r.frequency}</td>
+                    <td style="text-transform: capitalize;">${this.escapeHtml(r.frequency)}</td>
                     <td>${nextDate}</td>
                     <td>
-                        <button class="btn-icon" onclick="app.editRecurring('${r.id}')" title="Edit">
+                        <button class="btn-icon" onclick="app.editRecurring('${r.id}')" title="Edit" aria-label="Edit recurring transaction">
                             <i class="fas fa-edit"></i>
                         </button>
-                        <button class="btn-icon delete" onclick="app.deleteRecurring('${r.id}')" title="Delete">
+                        <button class="btn-icon delete" onclick="app.confirmAction('Delete Recurring', 'Are you sure you want to delete this recurring transaction?', () => app.deleteRecurring('${r.id}'))" title="Delete" aria-label="Delete recurring transaction">
                             <i class="fas fa-trash"></i>
                         </button>
                     </td>
@@ -1420,10 +1578,20 @@ class FinanceApp {
 
         const id = document.getElementById('asset-id').value || Date.now().toString();
         const type = document.querySelector('input[name="asset-type"]:checked').value;
-        const name = document.getElementById('asset-name').value;
+        const name = document.getElementById('asset-name').value.trim();
         const value = parseFloat(document.getElementById('asset-value').value);
         const category = document.getElementById('asset-category-select').value;
         const notes = document.getElementById('asset-notes').value;
+
+        // Validation
+        if (!name) {
+            this.showToast('Name cannot be empty', 'error');
+            return;
+        }
+        if (isNaN(value) || value < 0) {
+            this.showToast('Value must be 0 or greater', 'error');
+            return;
+        }
 
         const asset = {
             id,
@@ -1591,6 +1759,12 @@ class FinanceApp {
         const isRecurring = document.getElementById('contribution-recurring').checked;
         const frequency = document.getElementById('contribution-frequency').value;
 
+        // Validation
+        if (!amount || amount <= 0) {
+            this.showToast('Contribution amount must be greater than 0', 'error');
+            return;
+        }
+
         const asset = this.data.assets.find(a => a.id === assetId);
         if (!asset) return;
 
@@ -1686,8 +1860,19 @@ class FinanceApp {
         const payment = parseFloat(document.getElementById('payment-amount').value);
         const date = document.getElementById('payment-date').value;
 
+        // Validation
+        if (!payment || payment <= 0) {
+            this.showToast('Payment amount must be greater than 0', 'error');
+            return;
+        }
+
         const debt = this.data.assets.find(a => a.id === debtId);
         if (!debt) return;
+
+        if (payment > debt.value) {
+            this.showToast('Payment amount exceeds debt balance', 'error');
+            return;
+        }
 
         const rate = debt.interestRate || 0;
         const monthlyRate = rate / 100 / 12;
@@ -1784,6 +1969,12 @@ class FinanceApp {
         const date = document.getElementById('withdrawal-date').value;
         const reason = document.getElementById('withdrawal-reason').value;
 
+        // Validation
+        if (!amount || amount <= 0) {
+            this.showToast('Withdrawal amount must be greater than 0', 'error');
+            return;
+        }
+
         const asset = this.data.assets.find(a => a.id === assetId);
         if (!asset) return;
 
@@ -1862,7 +2053,7 @@ class FinanceApp {
             summaryHtml += `
                 <div class="summary-item">
                     <span class="label">Institution</span>
-                    <span class="value">${asset.institution}</span>
+                    <span class="value">${this.escapeHtml(asset.institution)}</span>
                 </div>
             `;
         }
@@ -1871,7 +2062,7 @@ class FinanceApp {
             summaryHtml += `
                 <div class="summary-item">
                     <span class="label">Account #</span>
-                    <span class="value">****${asset.accountLast4}</span>
+                    <span class="value">****${this.escapeHtml(asset.accountLast4)}</span>
                 </div>
             `;
         }
@@ -2094,7 +2285,7 @@ class FinanceApp {
                         <i class="fas fa-${h.icon}"></i>
                     </div>
                     <div class="history-details">
-                        <span class="history-description">${h.description}</span>
+                        <span class="history-description">${this.escapeHtml(h.description)}</span>
                         <span class="history-date">${new Date(h.date).toLocaleDateString()}</span>
                     </div>
                     <span class="history-amount ${h.isPositive ? 'positive' : ''}">${h.isPositive ? '+' : '-'}${this.formatCurrency(h.amount)}</span>
@@ -2203,8 +2394,8 @@ class FinanceApp {
             assetsList.innerHTML = '<div class="empty-state"><p>No assets added yet</p></div>';
         } else {
             assetsList.innerHTML = assets.map(a => {
-                const institutionText = a.institution ? ` • ${a.institution}` : '';
-                const accountText = a.accountLast4 ? ` (****${a.accountLast4})` : '';
+                const institutionText = a.institution ? ` &bull; ${this.escapeHtml(a.institution)}` : '';
+                const accountText = a.accountLast4 ? ` (****${this.escapeHtml(a.accountLast4)})` : '';
 
                 // Build YTD contribution progress for retirement accounts
                 let contributionProgress = '';
@@ -2224,22 +2415,22 @@ class FinanceApp {
                 return `
                     <div class="asset-item">
                         <div class="asset-info" onclick="app.openAccountDetails('${a.id}')" style="cursor: pointer;">
-                            <span class="asset-name">${a.name}${institutionText}${accountText}</span>
+                            <span class="asset-name">${this.escapeHtml(a.name)}${institutionText}${accountText}</span>
                             <span class="asset-category">${this.formatAccountType(a.category)}</span>
                             ${contributionProgress}
                         </div>
                         <span class="asset-value">${this.formatCurrency(a.value)}</span>
                         <div class="asset-actions">
-                            <button class="btn-action btn-contribute" onclick="app.openContributionModal('${a.id}')" title="Add Contribution">
+                            <button class="btn-action btn-contribute" onclick="app.openContributionModal('${a.id}')" title="Add Contribution" aria-label="Add contribution">
                                 <i class="fas fa-plus"></i> Add
                             </button>
-                            <button class="btn-action btn-withdraw" onclick="app.openWithdrawalModal('${a.id}')" title="Withdraw">
+                            <button class="btn-action btn-withdraw" onclick="app.openWithdrawalModal('${a.id}')" title="Withdraw" aria-label="Withdraw funds">
                                 <i class="fas fa-minus"></i>
                             </button>
-                            <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit">
+                            <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit" aria-label="Edit asset">
                                 <i class="fas fa-edit"></i>
                             </button>
-                            <button class="btn-icon delete" onclick="app.deleteAsset('${a.id}')" title="Delete">
+                            <button class="btn-icon delete" onclick="app.confirmAction('Delete Asset', 'Are you sure you want to delete this asset?', () => app.deleteAsset('${a.id}'))" title="Delete" aria-label="Delete asset">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </div>
@@ -2261,7 +2452,7 @@ class FinanceApp {
                     ? `Payoff: <span class="payoff-date">${payoffDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}</span>`
                     : (a.interestRate ? 'Add min payment to see payoff' : '');
                 const rateText = a.interestRate ? ` @ ${a.interestRate}%` : '';
-                const institutionText = a.institution ? ` • ${a.institution}` : '';
+                const institutionText = a.institution ? ` &bull; ${this.escapeHtml(a.institution)}` : '';
 
                 // Credit utilization for credit cards
                 let utilizationBar = '';
@@ -2281,20 +2472,20 @@ class FinanceApp {
                 return `
                     <div class="liability-item">
                         <div class="liability-info" onclick="app.openAccountDetails('${a.id}')" style="cursor: pointer;">
-                            <span class="liability-name">${a.name}${institutionText}${rateText}</span>
+                            <span class="liability-name">${this.escapeHtml(a.name)}${institutionText}${rateText}</span>
                             <span class="liability-category">${this.formatAccountType(a.category)}</span>
                             ${utilizationBar}
                             ${payoffText ? `<div class="debt-payoff-info">${payoffText}</div>` : ''}
                         </div>
                         <span class="liability-value">${this.formatCurrency(a.value)}</span>
                         <div class="liability-actions">
-                            <button class="btn-action btn-payment" onclick="app.openPaymentModal('${a.id}')" title="Pay">
+                            <button class="btn-action btn-payment" onclick="app.openPaymentModal('${a.id}')" title="Pay" aria-label="Make payment">
                                 <i class="fas fa-credit-card"></i> Pay
                             </button>
-                            <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit">
+                            <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit" aria-label="Edit liability">
                                 <i class="fas fa-edit"></i>
                             </button>
-                            <button class="btn-icon delete" onclick="app.deleteAsset('${a.id}')" title="Delete">
+                            <button class="btn-icon delete" onclick="app.confirmAction('Delete Liability', 'Are you sure you want to delete this liability?', () => app.deleteAsset('${a.id}'))" title="Delete" aria-label="Delete liability">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </div>
@@ -2327,24 +2518,34 @@ class FinanceApp {
         const ctx = document.getElementById('networth-chart');
         if (!ctx) return;
 
-        if (this.charts.networth) {
-            this.charts.networth.destroy();
-        }
-
         const history = this.data.networthHistory.slice(-12); // Last 12 data points
 
         if (history.length < 2) {
+            if (this.charts.networth) {
+                this.charts.networth.destroy();
+                this.charts.networth = null;
+            }
             ctx.parentElement.innerHTML = '<div class="empty-state"><p>Not enough data for chart. Update your assets regularly to see trends.</p></div>';
+            return;
+        }
+
+        const labels = history.map(h => new Date(h.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+        const data = history.map(h => h.networth);
+
+        if (this.charts.networth) {
+            this.charts.networth.data.labels = labels;
+            this.charts.networth.data.datasets[0].data = data;
+            this.charts.networth.update();
             return;
         }
 
         this.charts.networth = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: history.map(h => new Date(h.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
+                labels,
                 datasets: [{
                     label: 'Net Worth',
-                    data: history.map(h => h.networth),
+                    data,
                     borderColor: '#6366f1',
                     backgroundColor: 'rgba(99, 102, 241, 0.1)',
                     fill: true,
@@ -2439,7 +2640,7 @@ class FinanceApp {
             return `
                 <div class="budget-bar-item">
                     <div class="budget-bar-header">
-                        <span class="budget-bar-name">${category.name}</span>
+                        <span class="budget-bar-name">${this.escapeHtml(category.name)}</span>
                         <span class="budget-bar-amount">${this.formatCurrency(spent)} / ${this.formatCurrency(b.amount)}</span>
                     </div>
                     <div class="budget-bar-track">
@@ -2454,13 +2655,13 @@ class FinanceApp {
         const ctx = document.getElementById('spending-pie-chart');
         if (!ctx) return;
 
-        if (this.charts.spendingPie) {
-            this.charts.spendingPie.destroy();
-        }
-
         const expenses = transactions.filter(t => t.type === 'expense');
 
         if (expenses.length === 0) {
+            if (this.charts.spendingPie) {
+                this.charts.spendingPie.destroy();
+                this.charts.spendingPie = null;
+            }
             ctx.parentElement.innerHTML = '<canvas id="spending-pie-chart"></canvas><div class="empty-state" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"><p>No expenses this month</p></div>';
             return;
         }
@@ -2478,6 +2679,14 @@ class FinanceApp {
         const labels = Object.values(categoryTotals).map(c => c.name);
         const data = Object.values(categoryTotals).map(c => c.total);
         const colors = Object.values(categoryTotals).map(c => c.color);
+
+        if (this.charts.spendingPie) {
+            this.charts.spendingPie.data.labels = labels;
+            this.charts.spendingPie.data.datasets[0].data = data;
+            this.charts.spendingPie.data.datasets[0].backgroundColor = colors;
+            this.charts.spendingPie.update();
+            return;
+        }
 
         this.charts.spendingPie = new Chart(ctx, {
             type: 'doughnut',
@@ -2527,8 +2736,8 @@ class FinanceApp {
                         <i class="fas fa-${t.type === 'income' ? 'arrow-down' : 'arrow-up'}"></i>
                     </div>
                     <div class="transaction-details">
-                        <div class="transaction-description">${t.description}</div>
-                        <div class="transaction-category">${category.name}</div>
+                        <div class="transaction-description">${this.escapeHtml(t.description)}</div>
+                        <div class="transaction-category">${this.escapeHtml(category.name)}</div>
                     </div>
                     <div class="transaction-amount ${amountClass}">${amountPrefix}${this.formatCurrency(t.amount)}</div>
                 </div>
@@ -2562,7 +2771,7 @@ class FinanceApp {
             return `
                 <div class="recurring-item">
                     <div class="recurring-info">
-                        <div class="recurring-name">${r.name}</div>
+                        <div class="recurring-name">${this.escapeHtml(r.name)}</div>
                         <div class="recurring-date">${dateText}</div>
                     </div>
                     <div class="recurring-amount ${amountClass}">${amountPrefix}${this.formatCurrency(r.amount)}</div>
@@ -2633,10 +2842,6 @@ class FinanceApp {
         const ctx = document.getElementById('income-expense-chart');
         if (!ctx) return;
 
-        if (this.charts.incomeExpense) {
-            this.charts.incomeExpense.destroy();
-        }
-
         // Group by month
         const monthlyData = {};
         transactions.forEach(t => {
@@ -2662,6 +2867,14 @@ class FinanceApp {
             const [year, month] = l.split('-');
             return new Date(year, month - 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
         });
+
+        if (this.charts.incomeExpense) {
+            this.charts.incomeExpense.data.labels = formattedLabels;
+            this.charts.incomeExpense.data.datasets[0].data = incomeData;
+            this.charts.incomeExpense.data.datasets[1].data = expenseData;
+            this.charts.incomeExpense.update();
+            return;
+        }
 
         this.charts.incomeExpense = new Chart(ctx, {
             type: 'bar',
@@ -2699,10 +2912,6 @@ class FinanceApp {
         const ctx = document.getElementById('expense-breakdown-chart');
         if (!ctx) return;
 
-        if (this.charts.expenseBreakdown) {
-            this.charts.expenseBreakdown.destroy();
-        }
-
         const expenses = transactions.filter(t => t.type === 'expense');
 
         if (expenses.length === 0) {
@@ -2719,14 +2928,25 @@ class FinanceApp {
         });
 
         const sorted = Object.values(categoryTotals).sort((a, b) => b.total - a.total);
+        const labels = sorted.map(c => c.name);
+        const data = sorted.map(c => c.total);
+        const colors = sorted.map(c => c.color);
+
+        if (this.charts.expenseBreakdown) {
+            this.charts.expenseBreakdown.data.labels = labels;
+            this.charts.expenseBreakdown.data.datasets[0].data = data;
+            this.charts.expenseBreakdown.data.datasets[0].backgroundColor = colors;
+            this.charts.expenseBreakdown.update();
+            return;
+        }
 
         this.charts.expenseBreakdown = new Chart(ctx, {
             type: 'pie',
             data: {
-                labels: sorted.map(c => c.name),
+                labels,
                 datasets: [{
-                    data: sorted.map(c => c.total),
-                    backgroundColor: sorted.map(c => c.color),
+                    data,
+                    backgroundColor: colors,
                     borderWidth: 0
                 }]
             },
@@ -2750,10 +2970,6 @@ class FinanceApp {
         const ctx = document.getElementById('spending-trend-chart');
         if (!ctx) return;
 
-        if (this.charts.spendingTrend) {
-            this.charts.spendingTrend.destroy();
-        }
-
         const dailySpending = {};
         transactions.filter(t => t.type === 'expense').forEach(t => {
             if (!dailySpending[t.date]) {
@@ -2767,15 +2983,25 @@ class FinanceApp {
 
         // Calculate running average
         const avgValues = values.map((v, i) => {
-            const start = Math.max(0, i - 6);
-            const subset = values.slice(start, i + 1);
+            const startIdx = Math.max(0, i - 6);
+            const subset = values.slice(startIdx, i + 1);
             return subset.reduce((a, b) => a + b, 0) / subset.length;
         });
+
+        const labels = dates.map(d => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+
+        if (this.charts.spendingTrend) {
+            this.charts.spendingTrend.data.labels = labels;
+            this.charts.spendingTrend.data.datasets[0].data = values;
+            this.charts.spendingTrend.data.datasets[1].data = avgValues;
+            this.charts.spendingTrend.update();
+            return;
+        }
 
         this.charts.spendingTrend = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: dates.map(d => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
+                labels,
                 datasets: [
                     {
                         label: 'Daily Spending',
@@ -2814,10 +3040,6 @@ class FinanceApp {
         const ctx = document.getElementById('savings-chart');
         if (!ctx) return;
 
-        if (this.charts.savings) {
-            this.charts.savings.destroy();
-        }
-
         const monthlyData = {};
         transactions.forEach(t => {
             const date = new Date(t.date);
@@ -2845,6 +3067,13 @@ class FinanceApp {
             const [year, month] = l.split('-');
             return new Date(year, month - 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
         });
+
+        if (this.charts.savings) {
+            this.charts.savings.data.labels = formattedLabels;
+            this.charts.savings.data.datasets[0].data = savingsRate;
+            this.charts.savings.update();
+            return;
+        }
 
         this.charts.savings = new Chart(ctx, {
             type: 'line',
@@ -2905,8 +3134,8 @@ class FinanceApp {
             <tr>
                 <td>
                     <span style="display: inline-flex; align-items: center; gap: 8px;">
-                        <span style="width: 10px; height: 10px; border-radius: 50%; background: ${stat.color}"></span>
-                        ${stat.name}
+                        <span style="width: 10px; height: 10px; border-radius: 50%; background: ${this.escapeHtml(stat.color)}"></span>
+                        ${this.escapeHtml(stat.name)}
                     </span>
                 </td>
                 <td>${this.formatCurrency(stat.total)}</td>
@@ -2926,10 +3155,10 @@ class FinanceApp {
 
         list.innerHTML = this.data.categories.map(cat => `
             <div class="category-item">
-                <span class="category-color" style="background: ${cat.color}"></span>
-                <span class="category-name">${cat.name}</span>
-                <span class="category-type ${cat.type}">${cat.type}</span>
-                <button class="btn-icon delete" onclick="app.deleteCategory('${cat.id}')" title="Delete">
+                <span class="category-color" style="background: ${this.escapeHtml(cat.color)}"></span>
+                <span class="category-name">${this.escapeHtml(cat.name)}</span>
+                <span class="category-type ${this.escapeHtml(cat.type)}">${this.escapeHtml(cat.type)}</span>
+                <button class="btn-icon delete" onclick="app.deleteCategory('${this.escapeHtml(cat.id)}')" title="Delete" aria-label="Delete category">
                     <i class="fas fa-trash"></i>
                 </button>
             </div>
@@ -3026,7 +3255,7 @@ class FinanceApp {
 
         toast.innerHTML = `
             <i class="fas fa-${icons[type]} toast-icon"></i>
-            <span class="toast-message">${message}</span>
+            <span class="toast-message">${this.escapeHtml(message)}</span>
         `;
 
         container.appendChild(toast);
