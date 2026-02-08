@@ -779,6 +779,12 @@
                     <input type="number" id="contribution-amount" step="0.01" min="0" required placeholder="0.00">
                 </div>
                 <div class="form-group">
+                    <label for="contribution-from-account">Pay From</label>
+                    <select id="contribution-from-account">
+                        <option value="">Cash / External</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label for="contribution-date">Date</label>
                     <input type="date" id="contribution-date" required>
                 </div>
@@ -832,6 +838,12 @@
                     <label for="payment-amount">Payment Amount</label>
                     <input type="number" id="payment-amount" step="0.01" min="0" required placeholder="0.00" oninput="app.calculatePaymentSplit()">
                 </div>
+                <div class="form-group">
+                    <label for="payment-from-account">Pay From</label>
+                    <select id="payment-from-account">
+                        <option value="">Cash / External</option>
+                    </select>
+                </div>
                 <div class="payment-split">
                     <div class="split-row">
                         <span class="label">Principal:</span>
@@ -869,6 +881,12 @@
                 <div class="form-group">
                     <label for="withdrawal-amount">Withdrawal Amount</label>
                     <input type="number" id="withdrawal-amount" step="0.01" min="0" required placeholder="0.00">
+                </div>
+                <div class="form-group">
+                    <label for="withdrawal-to-account">Deposit To</label>
+                    <select id="withdrawal-to-account">
+                        <option value="">Cash / External</option>
+                    </select>
                 </div>
                 <div class="form-group">
                     <label for="withdrawal-date">Date</label>

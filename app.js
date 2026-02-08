@@ -1747,6 +1747,20 @@ class FinanceApp {
         document.getElementById('contribution-recurring').checked = false;
         document.getElementById('contribution-recurring-fields').style.display = 'none';
 
+        // Populate "Pay From" dropdown with asset accounts (excluding the target)
+        const fromSelect = document.getElementById('contribution-from-account');
+        const otherAssets = this.data.assets.filter(a => a.type === 'asset' && a.id !== assetId);
+        let optionsHtml = '<option value="">Cash / External</option>';
+        if (otherAssets.length > 0) {
+            optionsHtml += '<optgroup label="Your Accounts">';
+            otherAssets.forEach(a => {
+                const name = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
+                optionsHtml += `<option value="${this.escapeHtml(a.id)}">${name}</option>`;
+            });
+            optionsHtml += '</optgroup>';
+        }
+        fromSelect.innerHTML = optionsHtml;
+
         this.openModal('contribution-modal');
     }
 
@@ -1756,6 +1770,7 @@ class FinanceApp {
         const assetId = document.getElementById('contribution-asset-id').value;
         const amount = parseFloat(document.getElementById('contribution-amount').value);
         const date = document.getElementById('contribution-date').value;
+        const fromAccountId = document.getElementById('contribution-from-account').value || null;
         const isRecurring = document.getElementById('contribution-recurring').checked;
         const frequency = document.getElementById('contribution-frequency').value;
 
@@ -1772,6 +1787,15 @@ class FinanceApp {
         asset.value += amount;
         asset.updatedAt = new Date().toISOString();
 
+        // Deduct from source account if selected
+        if (fromAccountId) {
+            const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
+            if (fromAccount) {
+                fromAccount.value -= amount;
+                fromAccount.updatedAt = new Date().toISOString();
+            }
+        }
+
         // Record contribution
         if (!asset.contributions) asset.contributions = [];
         asset.contributions.push({
@@ -1784,12 +1808,14 @@ class FinanceApp {
         // Create transaction record
         const transaction = {
             id: Date.now().toString(),
-            type: 'expense',
+            type: 'transfer',
             amount: amount,
             description: `Contribution to ${asset.name}`,
-            categoryId: asset.category === 'retirement' ? 'investments' : 'other-expense',
+            categoryId: null,
             date: date,
             notes: 'Auto-created from contribution',
+            fromAccountId: fromAccountId,
+            toAccountId: assetId,
             linkedAssetId: assetId,
             createdAt: new Date().toISOString()
         };
@@ -1831,6 +1857,20 @@ class FinanceApp {
         document.getElementById('payment-date').valueAsDate = new Date();
         document.getElementById('payment-amount').value = debt.minPayment || '';
 
+        // Populate "Pay From" dropdown with asset accounts
+        const fromSelect = document.getElementById('payment-from-account');
+        const assets = this.data.assets.filter(a => a.type === 'asset');
+        let optionsHtml = '<option value="">Cash / External</option>';
+        if (assets.length > 0) {
+            optionsHtml += '<optgroup label="Your Accounts">';
+            assets.forEach(a => {
+                const name = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
+                optionsHtml += `<option value="${this.escapeHtml(a.id)}">${name}</option>`;
+            });
+            optionsHtml += '</optgroup>';
+        }
+        fromSelect.innerHTML = optionsHtml;
+
         this.currentDebt = debt;
         this.calculatePaymentSplit();
 
@@ -1859,6 +1899,7 @@ class FinanceApp {
         const debtId = document.getElementById('payment-debt-id').value;
         const payment = parseFloat(document.getElementById('payment-amount').value);
         const date = document.getElementById('payment-date').value;
+        const fromAccountId = document.getElementById('payment-from-account').value || null;
 
         // Validation
         if (!payment || payment <= 0) {
@@ -1883,6 +1924,15 @@ class FinanceApp {
         debt.value = Math.max(0, debt.value - principalPortion);
         debt.updatedAt = new Date().toISOString();
 
+        // Deduct from source account if selected
+        if (fromAccountId) {
+            const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
+            if (fromAccount) {
+                fromAccount.value -= payment;
+                fromAccount.updatedAt = new Date().toISOString();
+            }
+        }
+
         // Record payment
         if (!debt.payments) debt.payments = [];
         debt.payments.push({
@@ -1898,12 +1948,14 @@ class FinanceApp {
         // Create transaction record
         const transaction = {
             id: Date.now().toString(),
-            type: 'expense',
+            type: 'payment',
             amount: payment,
             description: `Payment to ${debt.name}`,
-            categoryId: 'other-expense',
+            categoryId: null,
             date: date,
             notes: `Principal: ${this.formatCurrency(principalPortion)}, Interest: ${this.formatCurrency(interestPortion)}`,
+            fromAccountId: fromAccountId,
+            toAccountId: debtId,
             linkedDebtId: debtId,
             createdAt: new Date().toISOString()
         };
@@ -1958,6 +2010,20 @@ class FinanceApp {
         document.getElementById('withdrawal-amount').value = '';
         document.getElementById('withdrawal-reason').value = '';
 
+        // Populate "Deposit To" dropdown with asset accounts (excluding the source)
+        const toSelect = document.getElementById('withdrawal-to-account');
+        const otherAssets = this.data.assets.filter(a => a.type === 'asset' && a.id !== assetId);
+        let optionsHtml = '<option value="">Cash / External</option>';
+        if (otherAssets.length > 0) {
+            optionsHtml += '<optgroup label="Your Accounts">';
+            otherAssets.forEach(a => {
+                const name = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
+                optionsHtml += `<option value="${this.escapeHtml(a.id)}">${name}</option>`;
+            });
+            optionsHtml += '</optgroup>';
+        }
+        toSelect.innerHTML = optionsHtml;
+
         this.openModal('withdrawal-modal');
     }
 
@@ -1968,6 +2034,7 @@ class FinanceApp {
         const amount = parseFloat(document.getElementById('withdrawal-amount').value);
         const date = document.getElementById('withdrawal-date').value;
         const reason = document.getElementById('withdrawal-reason').value;
+        const toAccountId = document.getElementById('withdrawal-to-account').value || null;
 
         // Validation
         if (!amount || amount <= 0) {
@@ -1987,6 +2054,15 @@ class FinanceApp {
         asset.value -= amount;
         asset.updatedAt = new Date().toISOString();
 
+        // Deposit to destination account if selected
+        if (toAccountId) {
+            const toAccount = this.data.assets.find(a => a.id === toAccountId);
+            if (toAccount) {
+                toAccount.value += amount;
+                toAccount.updatedAt = new Date().toISOString();
+            }
+        }
+
         // Record withdrawal
         if (!asset.withdrawals) asset.withdrawals = [];
         asset.withdrawals.push({
@@ -1997,7 +2073,7 @@ class FinanceApp {
             createdAt: new Date().toISOString()
         });
 
-        // Create transaction record (income because money is coming out of the account to you)
+        // Create transaction record
         const reasonLabels = {
             'transfer': 'Transfer',
             'expense': 'Personal expense',
@@ -2010,12 +2086,14 @@ class FinanceApp {
 
         const transaction = {
             id: Date.now().toString(),
-            type: 'income',
+            type: toAccountId ? 'transfer' : 'income',
             amount: amount,
             description: `Withdrawal from ${asset.name}${reason ? ' - ' + reasonLabels[reason] : ''}`,
-            categoryId: 'other-income',
+            categoryId: toAccountId ? null : 'other-income',
             date: date,
             notes: 'Auto-created from withdrawal',
+            fromAccountId: assetId,
+            toAccountId: toAccountId,
             linkedAssetId: assetId,
             createdAt: new Date().toISOString()
         };
