@@ -56,25 +56,12 @@ FinanceTracker/
 9. **Mobile Nav** - Bottom navigation bar for phones
 10. **PWA** - Installable, offline capable
 
-## Current Issue (UNRESOLVED)
-**GitHub Pages not deploying new code.**
+## Deployment Note
+GitHub Pages requires manually initializing the build/deploy workflow.
+Go to Settings > Pages > Source: GitHub Actions, then run the workflow.
 
-- Code is on GitHub (verified via raw.githubusercontent.com)
-- But live site serves old version without mobile navigation
-- User cannot navigate on iPhone - sidebar hidden, no bottom nav visible
-
-### Troubleshooting Done
-- Bumped service worker cache version (v1 → v2)
-- Made commits to trigger redeploy
-- Waited several minutes
-- Verified code exists on GitHub main branch
-
-### Next Steps to Fix
-1. Check GitHub Pages settings (Settings > Pages)
-   - Ensure Source is set to "main" branch, "/ (root)"
-2. Check GitHub Actions for failed deployments
-3. May need to disable and re-enable GitHub Pages
-4. Alternative: Use Netlify or Vercel instead (drag & drop deploy)
+## Current Status
+All features working. App deployed and accessible on desktop and mobile.
 
 ## Data Structure (stored in localStorage + Firestore)
 ```javascript
