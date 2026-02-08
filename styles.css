@@ -1136,6 +1136,29 @@ body {
     box-shadow: var(--shadow);
 }
 
+/* 3-button toggle for income/expense/transfer */
+.toggle-group-3 .toggle-btn {
+    padding: 10px 12px;
+    font-size: 0.9rem;
+}
+
+/* Transaction account display */
+.transaction-account {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+.transaction-account i {
+    margin-right: 4px;
+}
+
+/* Transfer amount color */
+.transaction-amount.transfer {
+    color: var(--accent-primary);
+}
+
 .modal-actions {
     display: flex;
     justify-content: flex-end;

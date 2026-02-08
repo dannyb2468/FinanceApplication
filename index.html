@@ -512,12 +512,26 @@
                 <input type="hidden" id="transaction-id">
                 <div class="form-group">
                     <label>Type</label>
-                    <div class="toggle-group">
+                    <div class="toggle-group toggle-group-3">
                         <input type="radio" name="trans-type" id="trans-expense" value="expense" checked>
                         <label for="trans-expense" class="toggle-btn">Expense</label>
                         <input type="radio" name="trans-type" id="trans-income" value="income">
                         <label for="trans-income" class="toggle-btn">Income</label>
+                        <input type="radio" name="trans-type" id="trans-transfer" value="transfer">
+                        <label for="trans-transfer" class="toggle-btn">Transfer</label>
                     </div>
+                </div>
+                <div class="form-group" id="trans-from-account-group">
+                    <label for="trans-from-account">From Account</label>
+                    <select id="trans-from-account">
+                        <option value="">No account (cash/external)</option>
+                    </select>
+                </div>
+                <div class="form-group" id="trans-to-account-group" style="display: none;">
+                    <label for="trans-to-account">To Account</label>
+                    <select id="trans-to-account">
+                        <option value="">No account (cash/external)</option>
+                    </select>
                 </div>
                 <div class="form-group">
                     <label for="trans-amount">Amount</label>
@@ -527,7 +541,7 @@
                     <label for="trans-description">Description</label>
                     <input type="text" id="trans-description" required placeholder="What was this for?">
                 </div>
-                <div class="form-group">
+                <div class="form-group" id="trans-category-group">
                     <label for="trans-category">Category</label>
                     <select id="trans-category" required></select>
                 </div>

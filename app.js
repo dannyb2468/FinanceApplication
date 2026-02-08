@@ -376,9 +376,12 @@ class FinanceApp {
     }
 
     setupFormListeners() {
-        // Transaction type toggle - update category options
+        // Transaction type toggle - update category options and account fields
         document.querySelectorAll('input[name="trans-type"]').forEach(radio => {
-            radio.addEventListener('change', () => this.updateTransactionCategories());
+            radio.addEventListener('change', () => {
+                this.updateTransactionCategories();
+                this.updateTransactionAccountFields();
+            });
         });
 
         document.querySelectorAll('input[name="rec-type"]').forEach(radio => {
@@ -395,6 +398,72 @@ class FinanceApp {
             document.getElementById('contribution-recurring-fields').style.display =
                 e.target.checked ? 'block' : 'none';
         });
+    }
+
+    updateTransactionAccountFields() {
+        const type = document.querySelector('input[name="trans-type"]:checked').value;
+        const fromGroup = document.getElementById('trans-from-account-group');
+        const toGroup = document.getElementById('trans-to-account-group');
+        const categoryGroup = document.getElementById('trans-category-group');
+        const fromLabel = fromGroup.querySelector('label');
+        const toLabel = toGroup.querySelector('label');
+
+        if (type === 'expense') {
+            fromGroup.style.display = 'block';
+            toGroup.style.display = 'none';
+            categoryGroup.style.display = 'block';
+            fromLabel.textContent = 'Pay From Account';
+            document.getElementById('trans-category').required = true;
+        } else if (type === 'income') {
+            fromGroup.style.display = 'none';
+            toGroup.style.display = 'block';
+            categoryGroup.style.display = 'block';
+            toLabel.textContent = 'Deposit To Account';
+            document.getElementById('trans-category').required = true;
+        } else if (type === 'transfer') {
+            fromGroup.style.display = 'block';
+            toGroup.style.display = 'block';
+            categoryGroup.style.display = 'none';
+            fromLabel.textContent = 'From Account';
+            toLabel.textContent = 'To Account';
+            document.getElementById('trans-category').required = false;
+        }
+    }
+
+    populateAccountDropdowns() {
+        const fromSelect = document.getElementById('trans-from-account');
+        const toSelect = document.getElementById('trans-to-account');
+
+        // Build options HTML
+        let assetsHtml = '<option value="">No account (cash/external)</option>';
+        let liabilitiesHtml = '';
+
+        const assets = this.data.assets.filter(a => a.type === 'asset');
+        const liabilities = this.data.assets.filter(a => a.type === 'liability');
+
+        if (assets.length > 0) {
+            assetsHtml += '<optgroup label="Bank & Investment Accounts">';
+            assets.forEach(a => {
+                const displayName = a.institution ? `${a.name} (${a.institution})` : a.name;
+                assetsHtml += `<option value="${a.id}">${displayName}</option>`;
+            });
+            assetsHtml += '</optgroup>';
+        }
+
+        if (liabilities.length > 0) {
+            liabilitiesHtml = '<optgroup label="Credit Cards & Loans">';
+            liabilities.forEach(a => {
+                const displayName = a.institution ? `${a.name} (${a.institution})` : a.name;
+                liabilitiesHtml += `<option value="${a.id}">${displayName}</option>`;
+            });
+            liabilitiesHtml += '</optgroup>';
+        }
+
+        // For "From Account" - include both assets and credit cards (you can pay from credit)
+        fromSelect.innerHTML = assetsHtml + liabilitiesHtml;
+
+        // For "To Account" - primarily assets (deposits go to bank accounts) but also credit cards for payments
+        toSelect.innerHTML = assetsHtml + liabilitiesHtml;
     }
 
     // ==========================================
@@ -444,6 +513,8 @@ class FinanceApp {
         // Populate category selects when opening modals
         if (modalId === 'transaction-modal') {
             this.updateTransactionCategories();
+            this.populateAccountDropdowns();
+            this.updateTransactionAccountFields();
         } else if (modalId === 'recurring-modal') {
             this.updateRecurringCategories();
         } else if (modalId === 'budget-modal') {
@@ -458,10 +529,21 @@ class FinanceApp {
         if (form) form.reset();
 
         // Reset hidden IDs
-        document.getElementById('transaction-id').value = '';
-        document.getElementById('budget-id').value = '';
-        document.getElementById('recurring-id').value = '';
-        document.getElementById('asset-id').value = '';
+        const transactionId = document.getElementById('transaction-id');
+        const budgetId = document.getElementById('budget-id');
+        const recurringId = document.getElementById('recurring-id');
+        const assetId = document.getElementById('asset-id');
+
+        if (transactionId) transactionId.value = '';
+        if (budgetId) budgetId.value = '';
+        if (recurringId) recurringId.value = '';
+        if (assetId) assetId.value = '';
+
+        // Reset transaction modal to defaults
+        if (modalId === 'transaction-modal') {
+            document.getElementById('trans-expense').checked = true;
+            this.updateTransactionAccountFields();
+        }
     }
 
     // ==========================================
@@ -566,9 +648,11 @@ class FinanceApp {
         const type = document.querySelector('input[name="trans-type"]:checked').value;
         const amount = parseFloat(document.getElementById('trans-amount').value);
         const description = document.getElementById('trans-description').value;
-        const categoryId = document.getElementById('trans-category').value;
+        const categoryId = type === 'transfer' ? null : document.getElementById('trans-category').value;
         const date = document.getElementById('trans-date').value;
         const notes = document.getElementById('trans-notes').value;
+        const fromAccountId = document.getElementById('trans-from-account').value || null;
+        const toAccountId = document.getElementById('trans-to-account').value || null;
 
         const transaction = {
             id,
@@ -578,10 +662,22 @@ class FinanceApp {
             categoryId,
             date,
             notes,
+            fromAccountId,
+            toAccountId,
             createdAt: new Date().toISOString()
         };
 
         const existingIndex = this.data.transactions.findIndex(t => t.id === id);
+
+        // If editing, first reverse the old transaction's effect on accounts
+        if (existingIndex > -1) {
+            const oldTransaction = this.data.transactions[existingIndex];
+            this.reverseTransactionAccountEffect(oldTransaction);
+        }
+
+        // Apply the new transaction's effect on accounts
+        this.applyTransactionAccountEffect(transaction);
+
         if (existingIndex > -1) {
             this.data.transactions[existingIndex] = transaction;
             this.showToast('Transaction updated', 'success');
@@ -590,10 +686,117 @@ class FinanceApp {
             this.showToast('Transaction added', 'success');
         }
 
+        this.recordNetworthSnapshot();
         this.saveData();
         this.closeModal('transaction-modal');
         this.renderTransactions();
         this.renderDashboard();
+        this.renderNetWorth();
+    }
+
+    applyTransactionAccountEffect(transaction) {
+        const { type, amount, fromAccountId, toAccountId } = transaction;
+
+        if (type === 'expense' && fromAccountId) {
+            // Expense from an account - decrease asset balance OR increase liability balance
+            const account = this.data.assets.find(a => a.id === fromAccountId);
+            if (account) {
+                if (account.type === 'asset') {
+                    account.value -= amount; // Decrease bank balance
+                } else {
+                    account.value += amount; // Increase credit card balance (debt)
+                }
+                account.updatedAt = new Date().toISOString();
+            }
+        } else if (type === 'income' && toAccountId) {
+            // Income to an account - increase asset balance OR decrease liability balance
+            const account = this.data.assets.find(a => a.id === toAccountId);
+            if (account) {
+                if (account.type === 'asset') {
+                    account.value += amount; // Increase bank balance
+                } else {
+                    account.value -= amount; // Decrease credit card balance (payment)
+                    account.value = Math.max(0, account.value); // Don't go negative
+                }
+                account.updatedAt = new Date().toISOString();
+            }
+        } else if (type === 'transfer') {
+            // Transfer between accounts
+            if (fromAccountId) {
+                const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
+                if (fromAccount) {
+                    if (fromAccount.type === 'asset') {
+                        fromAccount.value -= amount;
+                    } else {
+                        fromAccount.value += amount; // Borrowing from credit
+                    }
+                    fromAccount.updatedAt = new Date().toISOString();
+                }
+            }
+            if (toAccountId) {
+                const toAccount = this.data.assets.find(a => a.id === toAccountId);
+                if (toAccount) {
+                    if (toAccount.type === 'asset') {
+                        toAccount.value += amount;
+                    } else {
+                        toAccount.value -= amount; // Paying off credit
+                        toAccount.value = Math.max(0, toAccount.value);
+                    }
+                    toAccount.updatedAt = new Date().toISOString();
+                }
+            }
+        }
+    }
+
+    reverseTransactionAccountEffect(transaction) {
+        const { type, amount, fromAccountId, toAccountId } = transaction;
+
+        if (type === 'expense' && fromAccountId) {
+            const account = this.data.assets.find(a => a.id === fromAccountId);
+            if (account) {
+                if (account.type === 'asset') {
+                    account.value += amount; // Restore bank balance
+                } else {
+                    account.value -= amount; // Reduce credit card balance
+                    account.value = Math.max(0, account.value);
+                }
+                account.updatedAt = new Date().toISOString();
+            }
+        } else if (type === 'income' && toAccountId) {
+            const account = this.data.assets.find(a => a.id === toAccountId);
+            if (account) {
+                if (account.type === 'asset') {
+                    account.value -= amount;
+                } else {
+                    account.value += amount;
+                }
+                account.updatedAt = new Date().toISOString();
+            }
+        } else if (type === 'transfer') {
+            if (fromAccountId) {
+                const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
+                if (fromAccount) {
+                    if (fromAccount.type === 'asset') {
+                        fromAccount.value += amount;
+                    } else {
+                        fromAccount.value -= amount;
+                        fromAccount.value = Math.max(0, fromAccount.value);
+                    }
+                    fromAccount.updatedAt = new Date().toISOString();
+                }
+            }
+            if (toAccountId) {
+                const toAccount = this.data.assets.find(a => a.id === toAccountId);
+                if (toAccount) {
+                    if (toAccount.type === 'asset') {
+                        toAccount.value -= amount;
+                    } else {
+                        toAccount.value += amount;
+                    }
+                    toAccount.updatedAt = new Date().toISOString();
+                }
+            }
+        }
     }
 
     editTransaction(id) {
@@ -603,24 +806,44 @@ class FinanceApp {
         document.getElementById('transaction-id').value = trans.id;
         document.getElementById('transaction-modal-title').textContent = 'Edit Transaction';
 
-        // Set type first to populate correct categories
+        // Set type first to populate correct categories and account fields
         document.getElementById(`trans-${trans.type}`).checked = true;
         this.updateTransactionCategories();
+        this.populateAccountDropdowns();
+        this.updateTransactionAccountFields();
 
         document.getElementById('trans-amount').value = trans.amount;
         document.getElementById('trans-description').value = trans.description;
-        document.getElementById('trans-category').value = trans.categoryId;
+        if (trans.categoryId) {
+            document.getElementById('trans-category').value = trans.categoryId;
+        }
         document.getElementById('trans-date').value = trans.date;
         document.getElementById('trans-notes').value = trans.notes || '';
+
+        // Set account selections
+        if (trans.fromAccountId) {
+            document.getElementById('trans-from-account').value = trans.fromAccountId;
+        }
+        if (trans.toAccountId) {
+            document.getElementById('trans-to-account').value = trans.toAccountId;
+        }
 
         this.openModal('transaction-modal');
     }
 
     deleteTransaction(id) {
+        const transaction = this.data.transactions.find(t => t.id === id);
+        if (transaction) {
+            // Reverse the account effect before deleting
+            this.reverseTransactionAccountEffect(transaction);
+        }
+
         this.data.transactions = this.data.transactions.filter(t => t.id !== id);
+        this.recordNetworthSnapshot();
         this.saveData();
         this.renderTransactions();
         this.renderDashboard();
+        this.renderNetWorth();
         this.showToast('Transaction deleted', 'success');
     }
 
@@ -682,15 +905,45 @@ class FinanceApp {
         }
 
         tbody.innerHTML = transactions.map(t => {
-            const category = this.getCategoryById(t.categoryId);
+            const category = t.categoryId ? this.getCategoryById(t.categoryId) : { name: 'Transfer', color: '#6366f1' };
             const formattedDate = new Date(t.date).toLocaleDateString();
-            const amountClass = t.type === 'income' ? 'income' : 'expense';
-            const amountPrefix = t.type === 'income' ? '+' : '-';
+
+            let amountClass, amountPrefix;
+            if (t.type === 'income') {
+                amountClass = 'income';
+                amountPrefix = '+';
+            } else if (t.type === 'transfer') {
+                amountClass = 'transfer';
+                amountPrefix = '';
+            } else {
+                amountClass = 'expense';
+                amountPrefix = '-';
+            }
+
+            // Get account info
+            let accountInfo = '';
+            if (t.type === 'transfer') {
+                const fromAccount = t.fromAccountId ? this.data.assets.find(a => a.id === t.fromAccountId) : null;
+                const toAccount = t.toAccountId ? this.data.assets.find(a => a.id === t.toAccountId) : null;
+                const fromName = fromAccount ? fromAccount.name : 'External';
+                const toName = toAccount ? toAccount.name : 'External';
+                accountInfo = `<span class="transaction-account"><i class="fas fa-exchange-alt"></i> ${fromName} → ${toName}</span>`;
+            } else if (t.fromAccountId || t.toAccountId) {
+                const accountId = t.fromAccountId || t.toAccountId;
+                const account = this.data.assets.find(a => a.id === accountId);
+                if (account) {
+                    const icon = account.type === 'liability' ? 'credit-card' : 'university';
+                    accountInfo = `<span class="transaction-account"><i class="fas fa-${icon}"></i> ${account.name}</span>`;
+                }
+            }
 
             return `
                 <tr>
                     <td>${formattedDate}</td>
-                    <td>${t.description}</td>
+                    <td>
+                        ${t.description}
+                        ${accountInfo}
+                    </td>
                     <td>
                         <span style="display: inline-flex; align-items: center; gap: 8px;">
                             <span style="width: 10px; height: 10px; border-radius: 50%; background: ${category.color}"></span>
@@ -1608,7 +1861,8 @@ class FinanceApp {
                     description: 'Contribution',
                     amount: c.amount,
                     icon: 'plus',
-                    color: '#10b981'
+                    color: '#10b981',
+                    isPositive: true
                 });
             });
         }
@@ -1622,7 +1876,8 @@ class FinanceApp {
                     description: 'Withdrawal' + (w.reason ? ` - ${w.reason}` : ''),
                     amount: w.amount,
                     icon: 'minus',
-                    color: '#ef4444'
+                    color: '#ef4444',
+                    isPositive: false
                 });
             });
         }
@@ -1636,10 +1891,54 @@ class FinanceApp {
                     description: `Payment (P: ${this.formatCurrency(p.principal)}, I: ${this.formatCurrency(p.interest)})`,
                     amount: p.amount,
                     icon: 'credit-card',
-                    color: '#6366f1'
+                    color: '#6366f1',
+                    isPositive: true // Payment reduces debt
                 });
             });
         }
+
+        // Add linked transactions (from transaction form)
+        this.data.transactions.forEach(t => {
+            const isFromThis = t.fromAccountId === asset.id;
+            const isToThis = t.toAccountId === asset.id;
+
+            if (isFromThis || isToThis) {
+                let isPositive, icon, color, description;
+
+                if (asset.type === 'asset') {
+                    // For assets: money out is negative, money in is positive
+                    isPositive = isToThis;
+                    icon = isToThis ? 'arrow-down' : 'arrow-up';
+                    color = isPositive ? '#10b981' : '#ef4444';
+                } else {
+                    // For liabilities: charges increase balance (negative), payments decrease (positive)
+                    isPositive = isToThis; // Payment to credit card
+                    icon = isToThis ? 'arrow-down' : 'shopping-cart';
+                    color = isPositive ? '#10b981' : '#ef4444';
+                }
+
+                if (t.type === 'transfer') {
+                    const otherAccountId = isFromThis ? t.toAccountId : t.fromAccountId;
+                    const otherAccount = this.data.assets.find(a => a.id === otherAccountId);
+                    const otherName = otherAccount ? otherAccount.name : 'External';
+                    description = isFromThis ? `Transfer to ${otherName}` : `Transfer from ${otherName}`;
+                    icon = 'exchange-alt';
+                    color = '#6366f1';
+                } else {
+                    description = t.description;
+                }
+
+                history.push({
+                    date: t.date,
+                    type: 'transaction',
+                    description: description,
+                    amount: t.amount,
+                    icon: icon,
+                    color: color,
+                    isPositive: isPositive
+                });
+            }
+        });
 
         // Sort by date descending
         history.sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -1647,7 +1946,7 @@ class FinanceApp {
         if (history.length === 0) {
             historyEl.innerHTML = '<div class="empty-state"><p>No transaction history yet</p></div>';
         } else {
-            historyEl.innerHTML = history.slice(0, 20).map(h => `
+            historyEl.innerHTML = history.slice(0, 30).map(h => `
                 <div class="history-item">
                     <div class="history-icon" style="background: ${h.color}20; color: ${h.color}">
                         <i class="fas fa-${h.icon}"></i>
@@ -1656,7 +1955,7 @@ class FinanceApp {
                         <span class="history-description">${h.description}</span>
                         <span class="history-date">${new Date(h.date).toLocaleDateString()}</span>
                     </div>
-                    <span class="history-amount ${h.type === 'contribution' ? 'positive' : ''}">${h.type === 'contribution' ? '+' : '-'}${this.formatCurrency(h.amount)}</span>
+                    <span class="history-amount ${h.isPositive ? 'positive' : ''}">${h.isPositive ? '+' : '-'}${this.formatCurrency(h.amount)}</span>
                 </div>
             `).join('');
         }
