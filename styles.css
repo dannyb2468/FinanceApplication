@@ -782,8 +782,8 @@ body {
 
 .asset-item, .liability-item {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    gap: 16px;
     padding: 14px 0;
     border-bottom: 1px solid var(--border-color);
 }
@@ -795,6 +795,8 @@ body {
 .asset-info, .liability-info {
     display: flex;
     flex-direction: column;
+    flex: 1;
+    min-width: 0;
 }
 
 .asset-name, .liability-name {
@@ -807,19 +809,25 @@ body {
     color: var(--text-secondary);
 }
 
-.asset-value {
+.asset-value, .liability-value {
     font-weight: 600;
+    text-align: right;
+    white-space: nowrap;
+    min-width: 100px;
+}
+
+.asset-value {
     color: var(--income-color);
 }
 
 .liability-value {
-    font-weight: 600;
     color: var(--expense-color);
 }
 
 .asset-actions, .liability-actions {
     display: flex;
     gap: 4px;
+    flex-shrink: 0;
 }
 
 .networth-history-card {
