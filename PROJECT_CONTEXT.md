@@ -61,6 +61,8 @@ FinanceTracker/
 14. **Account Details** - Institution tracking, account numbers, employer match, contribution limits, YTD progress
 15. **Withdrawal Tracking** - Track withdrawals from any account with reason codes
 16. **Credit Utilization** - Visual progress bar showing credit card usage vs limit
+17. **Transaction-Account Linking** - Transactions link to accounts for automatic balance updates
+18. **Transfer Transactions** - Move money between accounts with automatic balance adjustments
 
 ## Deployment Note
 GitHub Pages requires manually initializing the build/deploy workflow.
@@ -72,7 +74,7 @@ All features working. App deployed and accessible on desktop and mobile.
 ## Data Structure (stored in localStorage + Firestore)
 ```javascript
 {
-    transactions: [{ id, type, amount, description, categoryId, date, notes, linkedAssetId?, linkedDebtId? }],
+    transactions: [{ id, type, amount, description, categoryId, date, notes, fromAccountId?, toAccountId? }],
     budgets: [{ id, categoryId, amount }],
     recurring: [{ id, type, name, amount, categoryId, frequency, nextDate, linkedAssetId? }],
     assets: [{
