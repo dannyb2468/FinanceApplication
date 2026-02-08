@@ -545,7 +545,8 @@ class FinanceApp {
 
     formatCurrency(amount) {
         const currency = this.data.settings.currency;
-        return `${currency}${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const prefix = amount < 0 ? '-' : '';
+        return `${prefix}${currency}${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }
 
     // ==========================================
@@ -2462,7 +2463,11 @@ class FinanceApp {
 
         document.getElementById('total-assets').textContent = this.formatCurrency(totalAssets);
         document.getElementById('total-liabilities').textContent = this.formatCurrency(totalLiabilities);
-        document.getElementById('networth-value').textContent = this.formatCurrency(networth);
+
+        const networthEl = document.getElementById('networth-value');
+        networthEl.textContent = this.formatCurrency(networth);
+        networthEl.classList.toggle('positive', networth >= 0);
+        networthEl.classList.toggle('negative', networth < 0);
 
         // Render assets list
         const assetsList = document.getElementById('assets-list');
@@ -2681,8 +2686,18 @@ class FinanceApp {
 
         document.getElementById('monthly-income').textContent = '+' + this.formatCurrency(monthlyIncome);
         document.getElementById('monthly-expenses').textContent = '-' + this.formatCurrency(monthlyExpenses);
-        document.getElementById('monthly-balance').textContent = this.formatCurrency(monthlyIncome - monthlyExpenses);
-        document.getElementById('total-networth').textContent = this.formatCurrency(totalAssets - totalLiabilities);
+
+        const balance = monthlyIncome - monthlyExpenses;
+        const balanceEl = document.getElementById('monthly-balance');
+        balanceEl.textContent = this.formatCurrency(balance);
+        balanceEl.classList.toggle('positive', balance >= 0);
+        balanceEl.classList.toggle('negative', balance < 0);
+
+        const dashNetworth = totalAssets - totalLiabilities;
+        const dashNetworthEl = document.getElementById('total-networth');
+        dashNetworthEl.textContent = this.formatCurrency(dashNetworth);
+        dashNetworthEl.classList.toggle('positive', dashNetworth >= 0);
+        dashNetworthEl.classList.toggle('negative', dashNetworth < 0);
 
         // Render budget overview
         this.renderBudgetOverview();
