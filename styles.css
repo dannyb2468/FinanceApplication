@@ -1198,6 +1198,135 @@ body {
     font-size: 0.7rem;
 }
 
+/* Contribution & Debt Payment Styles */
+.contribution-asset-label {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--accent-primary);
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+    display: block;
+    text-align: center;
+}
+
+.debt-payment-info {
+    background: var(--bg-tertiary);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 20px;
+}
+
+.debt-info-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.debt-info-row:last-child {
+    border-bottom: none;
+}
+
+.debt-info-row .label {
+    color: var(--text-secondary);
+}
+
+.debt-info-row .value {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.payment-split {
+    background: var(--bg-tertiary);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 20px;
+}
+
+.split-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+}
+
+.split-row .label {
+    color: var(--text-secondary);
+}
+
+.split-row .value {
+    font-weight: 600;
+}
+
+.split-row .value.principal {
+    color: var(--accent-success);
+}
+
+.split-row .value.interest {
+    color: var(--accent-danger);
+}
+
+.debt-fields {
+    background: var(--bg-tertiary);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.debt-fields .form-group {
+    margin-bottom: 12px;
+}
+
+.debt-fields .form-group:last-child {
+    margin-bottom: 0;
+}
+
+/* Action buttons on asset/liability items */
+.item-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-action {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: none;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-contribute {
+    background: var(--accent-success);
+    color: white;
+}
+
+.btn-contribute:hover {
+    background: #059669;
+}
+
+.btn-payment {
+    background: var(--accent-primary);
+    color: white;
+}
+
+.btn-payment:hover {
+    background: var(--accent-primary-hover);
+}
+
+/* Payoff info */
+.debt-payoff-info {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+.payoff-date {
+    color: var(--accent-success);
+    font-weight: 500;
+}
+
 .btn-signout {
     width: calc(100% - 24px);
     margin: 0 12px 12px;

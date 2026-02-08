@@ -384,6 +384,17 @@ class FinanceApp {
         document.querySelectorAll('input[name="rec-type"]').forEach(radio => {
             radio.addEventListener('change', () => this.updateRecurringCategories());
         });
+
+        // Asset type toggle - show/hide debt fields
+        document.querySelectorAll('input[name="asset-type"]').forEach(radio => {
+            radio.addEventListener('change', () => this.toggleDebtFields());
+        });
+
+        // Contribution recurring toggle
+        document.getElementById('contribution-recurring').addEventListener('change', (e) => {
+            document.getElementById('contribution-recurring-fields').style.display =
+                e.target.checked ? 'block' : 'none';
+        });
     }
 
     // ==========================================
@@ -1065,18 +1076,31 @@ class FinanceApp {
             updatedAt: new Date().toISOString()
         };
 
+        // Add debt-specific fields for liabilities
+        if (type === 'liability') {
+            const rate = parseFloat(document.getElementById('asset-rate').value) || 0;
+            const minPayment = parseFloat(document.getElementById('asset-min-payment').value) || 0;
+            const originalAmount = parseFloat(document.getElementById('asset-original').value) || value;
+            asset.interestRate = rate;
+            asset.minPayment = minPayment;
+            asset.originalAmount = originalAmount;
+        }
+
         const existingIndex = this.data.assets.findIndex(a => a.id === id);
         if (existingIndex > -1) {
+            // Preserve contribution/payment history
+            asset.contributions = this.data.assets[existingIndex].contributions || [];
+            asset.payments = this.data.assets[existingIndex].payments || [];
             this.data.assets[existingIndex] = asset;
             this.showToast('Updated successfully', 'success');
         } else {
+            asset.contributions = [];
+            asset.payments = [];
             this.data.assets.push(asset);
             this.showToast('Added successfully', 'success');
         }
 
-        // Record net worth history
         this.recordNetworthSnapshot();
-
         this.saveData();
         this.closeModal('asset-modal');
         this.renderNetWorth();
@@ -1091,12 +1115,219 @@ class FinanceApp {
         document.getElementById('asset-modal-title').textContent = 'Edit ' + (asset.type === 'asset' ? 'Asset' : 'Liability');
 
         document.getElementById(`asset-${asset.type}`).checked = true;
+        this.toggleDebtFields();
         document.getElementById('asset-name').value = asset.name;
         document.getElementById('asset-value').value = asset.value;
         document.getElementById('asset-category-select').value = asset.category;
         document.getElementById('asset-notes').value = asset.notes || '';
 
+        // Fill debt fields if liability
+        if (asset.type === 'liability') {
+            document.getElementById('asset-rate').value = asset.interestRate || '';
+            document.getElementById('asset-min-payment').value = asset.minPayment || '';
+            document.getElementById('asset-original').value = asset.originalAmount || '';
+        }
+
         this.openModal('asset-modal');
+    }
+
+    toggleDebtFields() {
+        const isLiability = document.getElementById('asset-liability').checked;
+        document.getElementById('debt-fields').style.display = isLiability ? 'block' : 'none';
+    }
+
+    // Contribution Modal
+    openContributionModal(assetId) {
+        const asset = this.data.assets.find(a => a.id === assetId);
+        if (!asset) return;
+
+        document.getElementById('contribution-asset-id').value = assetId;
+        document.getElementById('contribution-asset-name').textContent = asset.name;
+        document.getElementById('contribution-date').valueAsDate = new Date();
+        document.getElementById('contribution-recurring').checked = false;
+        document.getElementById('contribution-recurring-fields').style.display = 'none';
+
+        this.openModal('contribution-modal');
+    }
+
+    saveContribution(event) {
+        event.preventDefault();
+
+        const assetId = document.getElementById('contribution-asset-id').value;
+        const amount = parseFloat(document.getElementById('contribution-amount').value);
+        const date = document.getElementById('contribution-date').value;
+        const isRecurring = document.getElementById('contribution-recurring').checked;
+        const frequency = document.getElementById('contribution-frequency').value;
+
+        const asset = this.data.assets.find(a => a.id === assetId);
+        if (!asset) return;
+
+        // Update asset value
+        asset.value += amount;
+        asset.updatedAt = new Date().toISOString();
+
+        // Record contribution
+        if (!asset.contributions) asset.contributions = [];
+        asset.contributions.push({
+            id: Date.now().toString(),
+            amount,
+            date,
+            createdAt: new Date().toISOString()
+        });
+
+        // Create transaction record
+        const transaction = {
+            id: Date.now().toString(),
+            type: 'expense',
+            amount: amount,
+            description: `Contribution to ${asset.name}`,
+            categoryId: asset.category === 'retirement' ? 'investments' : 'other-expense',
+            date: date,
+            notes: 'Auto-created from contribution',
+            linkedAssetId: assetId,
+            createdAt: new Date().toISOString()
+        };
+        this.data.transactions.push(transaction);
+
+        // Create recurring if checked
+        if (isRecurring) {
+            const nextDate = this.getNextRecurringDate(new Date(date), frequency);
+            this.data.recurring.push({
+                id: Date.now().toString() + '-rec',
+                type: 'expense',
+                name: `Contribution to ${asset.name}`,
+                amount: amount,
+                categoryId: asset.category === 'retirement' ? 'investments' : 'other-expense',
+                frequency: frequency,
+                nextDate: nextDate.toISOString().split('T')[0],
+                linkedAssetId: assetId,
+                createdAt: new Date().toISOString()
+            });
+        }
+
+        this.recordNetworthSnapshot();
+        this.saveData();
+        this.closeModal('contribution-modal');
+        this.renderNetWorth();
+        this.renderDashboard();
+        this.showToast(`Added ${this.formatCurrency(amount)} to ${asset.name}`, 'success');
+    }
+
+    // Debt Payment Modal
+    openPaymentModal(debtId) {
+        const debt = this.data.assets.find(a => a.id === debtId);
+        if (!debt) return;
+
+        document.getElementById('payment-debt-id').value = debtId;
+        document.getElementById('payment-debt-name').textContent = debt.name;
+        document.getElementById('payment-debt-balance').textContent = this.formatCurrency(debt.value);
+        document.getElementById('payment-debt-rate').textContent = (debt.interestRate || 0) + '%';
+        document.getElementById('payment-date').valueAsDate = new Date();
+        document.getElementById('payment-amount').value = debt.minPayment || '';
+
+        this.currentDebt = debt;
+        this.calculatePaymentSplit();
+
+        this.openModal('payment-modal');
+    }
+
+    calculatePaymentSplit() {
+        if (!this.currentDebt) return;
+
+        const payment = parseFloat(document.getElementById('payment-amount').value) || 0;
+        const rate = this.currentDebt.interestRate || 0;
+        const balance = this.currentDebt.value;
+
+        // Monthly interest
+        const monthlyRate = rate / 100 / 12;
+        const interestPortion = balance * monthlyRate;
+        const principalPortion = Math.max(0, payment - interestPortion);
+
+        document.getElementById('payment-interest').textContent = this.formatCurrency(interestPortion);
+        document.getElementById('payment-principal').textContent = this.formatCurrency(principalPortion);
+    }
+
+    saveDebtPayment(event) {
+        event.preventDefault();
+
+        const debtId = document.getElementById('payment-debt-id').value;
+        const payment = parseFloat(document.getElementById('payment-amount').value);
+        const date = document.getElementById('payment-date').value;
+
+        const debt = this.data.assets.find(a => a.id === debtId);
+        if (!debt) return;
+
+        const rate = debt.interestRate || 0;
+        const monthlyRate = rate / 100 / 12;
+        const interestPortion = debt.value * monthlyRate;
+        const principalPortion = Math.max(0, payment - interestPortion);
+
+        // Update debt balance
+        debt.value = Math.max(0, debt.value - principalPortion);
+        debt.updatedAt = new Date().toISOString();
+
+        // Record payment
+        if (!debt.payments) debt.payments = [];
+        debt.payments.push({
+            id: Date.now().toString(),
+            amount: payment,
+            principal: principalPortion,
+            interest: interestPortion,
+            date: date,
+            balanceAfter: debt.value,
+            createdAt: new Date().toISOString()
+        });
+
+        // Create transaction record
+        const transaction = {
+            id: Date.now().toString(),
+            type: 'expense',
+            amount: payment,
+            description: `Payment to ${debt.name}`,
+            categoryId: 'other-expense',
+            date: date,
+            notes: `Principal: ${this.formatCurrency(principalPortion)}, Interest: ${this.formatCurrency(interestPortion)}`,
+            linkedDebtId: debtId,
+            createdAt: new Date().toISOString()
+        };
+        this.data.transactions.push(transaction);
+
+        this.recordNetworthSnapshot();
+        this.saveData();
+        this.closeModal('payment-modal');
+        this.currentDebt = null;
+        this.renderNetWorth();
+        this.renderDashboard();
+
+        if (debt.value === 0) {
+            this.showToast(`Congratulations! ${debt.name} is paid off!`, 'success');
+        } else {
+            this.showToast(`Payment recorded. Remaining: ${this.formatCurrency(debt.value)}`, 'success');
+        }
+    }
+
+    calculatePayoffDate(debt) {
+        if (!debt.interestRate || !debt.minPayment || debt.minPayment <= 0) return null;
+
+        let balance = debt.value;
+        const monthlyRate = debt.interestRate / 100 / 12;
+        const payment = debt.minPayment;
+        let months = 0;
+        const maxMonths = 360; // 30 years max
+
+        while (balance > 0 && months < maxMonths) {
+            const interest = balance * monthlyRate;
+            const principal = payment - interest;
+            if (principal <= 0) return null; // Payment doesn't cover interest
+            balance -= principal;
+            months++;
+        }
+
+        if (months >= maxMonths) return null;
+
+        const payoffDate = new Date();
+        payoffDate.setMonth(payoffDate.getMonth() + months);
+        return payoffDate;
     }
 
     deleteAsset(id) {
@@ -1168,6 +1399,9 @@ class FinanceApp {
                     </div>
                     <span class="asset-value">${this.formatCurrency(a.value)}</span>
                     <div class="asset-actions">
+                        <button class="btn-action btn-contribute" onclick="app.openContributionModal('${a.id}')" title="Add Contribution">
+                            <i class="fas fa-plus"></i> Add
+                        </button>
                         <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit">
                             <i class="fas fa-edit"></i>
                         </button>
@@ -1186,23 +1420,35 @@ class FinanceApp {
         if (liabilities.length === 0) {
             liabilitiesList.innerHTML = '<div class="empty-state"><p>No liabilities added yet</p></div>';
         } else {
-            liabilitiesList.innerHTML = liabilities.map(a => `
-                <div class="liability-item">
-                    <div class="liability-info">
-                        <span class="liability-name">${a.name}</span>
-                        <span class="liability-category">${this.formatAssetCategory(a.category)}</span>
+            liabilitiesList.innerHTML = liabilities.map(a => {
+                const payoffDate = this.calculatePayoffDate(a);
+                const payoffText = payoffDate
+                    ? `Payoff: <span class="payoff-date">${payoffDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}</span>`
+                    : (a.interestRate ? 'Add min payment to see payoff' : '');
+                const rateText = a.interestRate ? ` @ ${a.interestRate}%` : '';
+
+                return `
+                    <div class="liability-item">
+                        <div class="liability-info">
+                            <span class="liability-name">${a.name}${rateText}</span>
+                            <span class="liability-category">${this.formatAssetCategory(a.category)}</span>
+                            ${payoffText ? `<div class="debt-payoff-info">${payoffText}</div>` : ''}
+                        </div>
+                        <span class="liability-value">${this.formatCurrency(a.value)}</span>
+                        <div class="liability-actions">
+                            <button class="btn-action btn-payment" onclick="app.openPaymentModal('${a.id}')" title="Pay">
+                                <i class="fas fa-credit-card"></i> Pay
+                            </button>
+                            <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button class="btn-icon delete" onclick="app.deleteAsset('${a.id}')" title="Delete">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
                     </div>
-                    <span class="liability-value">${this.formatCurrency(a.value)}</span>
-                    <div class="liability-actions">
-                        <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit">
-                            <i class="fas fa-edit"></i>
-                        </button>
-                        <button class="btn-icon delete" onclick="app.deleteAsset('${a.id}')" title="Delete">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         // Render net worth chart
