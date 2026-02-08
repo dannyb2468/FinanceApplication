@@ -1136,10 +1136,20 @@ body {
     box-shadow: var(--shadow);
 }
 
-/* 3-button toggle for income/expense/transfer */
-.toggle-group-3 .toggle-btn {
-    padding: 10px 12px;
-    font-size: 0.9rem;
+/* Multi-button toggle groups */
+.toggle-group-3 .toggle-btn,
+.toggle-group-4 .toggle-btn {
+    padding: 10px 10px;
+    font-size: 0.85rem;
+}
+
+@media (max-width: 480px) {
+    .toggle-group-4 {
+        flex-wrap: wrap;
+    }
+    .toggle-group-4 .toggle-btn {
+        flex: 1 1 45%;
+    }
 }
 
 /* Transaction account display */
@@ -1157,6 +1167,11 @@ body {
 /* Transfer amount color */
 .transaction-amount.transfer {
     color: var(--accent-primary);
+}
+
+/* Payment amount color (paying off debt - positive action but money out) */
+.transaction-amount.payment {
+    color: var(--accent-success);
 }
 
 .modal-actions {

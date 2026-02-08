@@ -512,25 +512,27 @@
                 <input type="hidden" id="transaction-id">
                 <div class="form-group">
                     <label>Type</label>
-                    <div class="toggle-group toggle-group-3">
+                    <div class="toggle-group toggle-group-4">
                         <input type="radio" name="trans-type" id="trans-expense" value="expense" checked>
                         <label for="trans-expense" class="toggle-btn">Expense</label>
                         <input type="radio" name="trans-type" id="trans-income" value="income">
                         <label for="trans-income" class="toggle-btn">Income</label>
                         <input type="radio" name="trans-type" id="trans-transfer" value="transfer">
                         <label for="trans-transfer" class="toggle-btn">Transfer</label>
+                        <input type="radio" name="trans-type" id="trans-payment" value="payment">
+                        <label for="trans-payment" class="toggle-btn">Payment</label>
                     </div>
                 </div>
                 <div class="form-group" id="trans-from-account-group">
-                    <label for="trans-from-account">From Account</label>
+                    <label for="trans-from-account">Pay From</label>
                     <select id="trans-from-account">
-                        <option value="">No account (cash/external)</option>
+                        <option value="">Cash / External</option>
                     </select>
                 </div>
                 <div class="form-group" id="trans-to-account-group" style="display: none;">
                     <label for="trans-to-account">To Account</label>
                     <select id="trans-to-account">
-                        <option value="">No account (cash/external)</option>
+                        <option value="">External</option>
                     </select>
                 </div>
                 <div class="form-group">

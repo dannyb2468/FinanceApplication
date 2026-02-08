@@ -408,41 +408,53 @@ class FinanceApp {
         const fromLabel = fromGroup.querySelector('label');
         const toLabel = toGroup.querySelector('label');
 
+        // Update account dropdowns based on transaction type
+        this.populateAccountDropdowns(type);
+
         if (type === 'expense') {
+            // Expense: pay from bank account OR charge to credit card
             fromGroup.style.display = 'block';
             toGroup.style.display = 'none';
             categoryGroup.style.display = 'block';
-            fromLabel.textContent = 'Pay From Account';
+            fromLabel.textContent = 'Pay From';
             document.getElementById('trans-category').required = true;
         } else if (type === 'income') {
+            // Income: deposit to bank/investment account only
             fromGroup.style.display = 'none';
             toGroup.style.display = 'block';
             categoryGroup.style.display = 'block';
-            toLabel.textContent = 'Deposit To Account';
+            toLabel.textContent = 'Deposit To';
             document.getElementById('trans-category').required = true;
         } else if (type === 'transfer') {
+            // Transfer: move between your own asset accounts
             fromGroup.style.display = 'block';
             toGroup.style.display = 'block';
             categoryGroup.style.display = 'none';
             fromLabel.textContent = 'From Account';
             toLabel.textContent = 'To Account';
             document.getElementById('trans-category').required = false;
+        } else if (type === 'payment') {
+            // Payment: pay debt from bank account (both decrease)
+            fromGroup.style.display = 'block';
+            toGroup.style.display = 'block';
+            categoryGroup.style.display = 'none';
+            fromLabel.textContent = 'Pay From';
+            toLabel.textContent = 'Pay To (Debt)';
+            document.getElementById('trans-category').required = false;
         }
     }
 
-    populateAccountDropdowns() {
+    populateAccountDropdowns(transactionType) {
         const fromSelect = document.getElementById('trans-from-account');
         const toSelect = document.getElementById('trans-to-account');
-
-        // Build options HTML
-        let assetsHtml = '<option value="">No account (cash/external)</option>';
-        let liabilitiesHtml = '';
 
         const assets = this.data.assets.filter(a => a.type === 'asset');
         const liabilities = this.data.assets.filter(a => a.type === 'liability');
 
+        // Build asset options
+        let assetsHtml = '';
         if (assets.length > 0) {
-            assetsHtml += '<optgroup label="Bank & Investment Accounts">';
+            assetsHtml = '<optgroup label="Bank & Investment Accounts">';
             assets.forEach(a => {
                 const displayName = a.institution ? `${a.name} (${a.institution})` : a.name;
                 assetsHtml += `<option value="${a.id}">${displayName}</option>`;
@@ -450,6 +462,8 @@ class FinanceApp {
             assetsHtml += '</optgroup>';
         }
 
+        // Build liability options
+        let liabilitiesHtml = '';
         if (liabilities.length > 0) {
             liabilitiesHtml = '<optgroup label="Credit Cards & Loans">';
             liabilities.forEach(a => {
@@ -459,11 +473,26 @@ class FinanceApp {
             liabilitiesHtml += '</optgroup>';
         }
 
-        // For "From Account" - include both assets and credit cards (you can pay from credit)
-        fromSelect.innerHTML = assetsHtml + liabilitiesHtml;
-
-        // For "To Account" - primarily assets (deposits go to bank accounts) but also credit cards for payments
-        toSelect.innerHTML = assetsHtml + liabilitiesHtml;
+        // Populate based on transaction type
+        if (transactionType === 'expense') {
+            // From: can pay with bank OR credit card
+            fromSelect.innerHTML = '<option value="">Cash</option>' + assetsHtml + liabilitiesHtml;
+        } else if (transactionType === 'income') {
+            // To: deposit only to asset accounts (not credit cards)
+            toSelect.innerHTML = '<option value="">External</option>' + assetsHtml;
+        } else if (transactionType === 'transfer') {
+            // Transfer: only between asset accounts
+            fromSelect.innerHTML = '<option value="">Select account</option>' + assetsHtml;
+            toSelect.innerHTML = '<option value="">Select account</option>' + assetsHtml;
+        } else if (transactionType === 'payment') {
+            // Payment: from asset TO liability
+            fromSelect.innerHTML = '<option value="">Select account</option>' + assetsHtml;
+            toSelect.innerHTML = '<option value="">Select debt to pay</option>' + liabilitiesHtml;
+        } else {
+            // Default
+            fromSelect.innerHTML = '<option value="">Cash / External</option>' + assetsHtml + liabilitiesHtml;
+            toSelect.innerHTML = '<option value="">External</option>' + assetsHtml + liabilitiesHtml;
+        }
     }
 
     // ==========================================
@@ -513,8 +542,7 @@ class FinanceApp {
         // Populate category selects when opening modals
         if (modalId === 'transaction-modal') {
             this.updateTransactionCategories();
-            this.populateAccountDropdowns();
-            this.updateTransactionAccountFields();
+            this.updateTransactionAccountFields(); // This now calls populateAccountDropdowns internally
         } else if (modalId === 'recurring-modal') {
             this.updateRecurringCategories();
         } else if (modalId === 'budget-modal') {
@@ -697,52 +725,98 @@ class FinanceApp {
     applyTransactionAccountEffect(transaction) {
         const { type, amount, fromAccountId, toAccountId } = transaction;
 
+        /*
+         * ACCOUNTING LOGIC:
+         *
+         * EXPENSE: Spending money
+         *   - From bank account → bank balance DECREASES
+         *   - From credit card → credit card balance INCREASES (charging to card = more debt)
+         *
+         * INCOME: Receiving money
+         *   - To bank account → bank balance INCREASES
+         *   - (Credit cards shouldn't receive income - that's a payment)
+         *
+         * TRANSFER: Moving money between your own asset accounts
+         *   - From account DECREASES
+         *   - To account INCREASES
+         *   - Only between asset accounts (checking ↔ savings ↔ brokerage)
+         *
+         * PAYMENT: Paying off debt
+         *   - From bank account → bank balance DECREASES
+         *   - To debt account → debt balance DECREASES
+         *   - BOTH accounts go down (you lose money, but you owe less)
+         */
+
         if (type === 'expense' && fromAccountId) {
-            // Expense from an account - decrease asset balance OR increase liability balance
             const account = this.data.assets.find(a => a.id === fromAccountId);
             if (account) {
                 if (account.type === 'asset') {
-                    account.value -= amount; // Decrease bank balance
+                    // Paying from bank/debit - balance goes down
+                    account.value -= amount;
                 } else {
-                    account.value += amount; // Increase credit card balance (debt)
+                    // Charging to credit card - debt goes UP
+                    account.value += amount;
                 }
                 account.updatedAt = new Date().toISOString();
             }
         } else if (type === 'income' && toAccountId) {
-            // Income to an account - increase asset balance OR decrease liability balance
             const account = this.data.assets.find(a => a.id === toAccountId);
-            if (account) {
-                if (account.type === 'asset') {
-                    account.value += amount; // Increase bank balance
-                } else {
-                    account.value -= amount; // Decrease credit card balance (payment)
-                    account.value = Math.max(0, account.value); // Don't go negative
-                }
+            if (account && account.type === 'asset') {
+                // Deposit to bank - balance goes up
+                account.value += amount;
                 account.updatedAt = new Date().toISOString();
             }
         } else if (type === 'transfer') {
-            // Transfer between accounts
+            // Transfer between asset accounts - one down, one up
             if (fromAccountId) {
                 const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
-                if (fromAccount) {
-                    if (fromAccount.type === 'asset') {
-                        fromAccount.value -= amount;
-                    } else {
-                        fromAccount.value += amount; // Borrowing from credit
-                    }
+                if (fromAccount && fromAccount.type === 'asset') {
+                    fromAccount.value -= amount;
                     fromAccount.updatedAt = new Date().toISOString();
                 }
             }
             if (toAccountId) {
                 const toAccount = this.data.assets.find(a => a.id === toAccountId);
-                if (toAccount) {
-                    if (toAccount.type === 'asset') {
-                        toAccount.value += amount;
-                    } else {
-                        toAccount.value -= amount; // Paying off credit
-                        toAccount.value = Math.max(0, toAccount.value);
-                    }
+                if (toAccount && toAccount.type === 'asset') {
+                    toAccount.value += amount;
                     toAccount.updatedAt = new Date().toISOString();
+                }
+            }
+        } else if (type === 'payment') {
+            // Debt payment - BOTH accounts decrease
+            if (fromAccountId) {
+                const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
+                if (fromAccount && fromAccount.type === 'asset') {
+                    // Bank account decreases (money leaves)
+                    fromAccount.value -= amount;
+                    fromAccount.updatedAt = new Date().toISOString();
+                }
+            }
+            if (toAccountId) {
+                const toAccount = this.data.assets.find(a => a.id === toAccountId);
+                if (toAccount && toAccount.type === 'liability') {
+                    // Debt decreases (you owe less)
+                    toAccount.value -= amount;
+                    toAccount.value = Math.max(0, toAccount.value); // Can't go negative
+                    toAccount.updatedAt = new Date().toISOString();
+
+                    // Record as a payment in the debt's payment history
+                    if (!toAccount.payments) toAccount.payments = [];
+                    // Calculate interest portion if we have rate info
+                    const monthlyRate = (toAccount.interestRate || 0) / 100 / 12;
+                    const oldBalance = toAccount.value + amount; // Balance before payment
+                    const interestPortion = oldBalance * monthlyRate;
+                    const principalPortion = Math.max(0, amount - interestPortion);
+
+                    toAccount.payments.push({
+                        id: transaction.id + '-payment',
+                        amount: amount,
+                        principal: principalPortion,
+                        interest: interestPortion,
+                        date: transaction.date,
+                        balanceAfter: toAccount.value,
+                        createdAt: new Date().toISOString()
+                    });
                 }
             }
         }
@@ -751,49 +825,59 @@ class FinanceApp {
     reverseTransactionAccountEffect(transaction) {
         const { type, amount, fromAccountId, toAccountId } = transaction;
 
+        // Reverse the effects applied above
+
         if (type === 'expense' && fromAccountId) {
             const account = this.data.assets.find(a => a.id === fromAccountId);
             if (account) {
                 if (account.type === 'asset') {
                     account.value += amount; // Restore bank balance
                 } else {
-                    account.value -= amount; // Reduce credit card balance
+                    account.value -= amount; // Remove charge from credit card
                     account.value = Math.max(0, account.value);
                 }
                 account.updatedAt = new Date().toISOString();
             }
         } else if (type === 'income' && toAccountId) {
             const account = this.data.assets.find(a => a.id === toAccountId);
-            if (account) {
-                if (account.type === 'asset') {
-                    account.value -= amount;
-                } else {
-                    account.value += amount;
-                }
+            if (account && account.type === 'asset') {
+                account.value -= amount; // Remove deposit
                 account.updatedAt = new Date().toISOString();
             }
         } else if (type === 'transfer') {
             if (fromAccountId) {
                 const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
-                if (fromAccount) {
-                    if (fromAccount.type === 'asset') {
-                        fromAccount.value += amount;
-                    } else {
-                        fromAccount.value -= amount;
-                        fromAccount.value = Math.max(0, fromAccount.value);
-                    }
+                if (fromAccount && fromAccount.type === 'asset') {
+                    fromAccount.value += amount; // Restore source
                     fromAccount.updatedAt = new Date().toISOString();
                 }
             }
             if (toAccountId) {
                 const toAccount = this.data.assets.find(a => a.id === toAccountId);
-                if (toAccount) {
-                    if (toAccount.type === 'asset') {
-                        toAccount.value -= amount;
-                    } else {
-                        toAccount.value += amount;
-                    }
+                if (toAccount && toAccount.type === 'asset') {
+                    toAccount.value -= amount; // Remove from destination
                     toAccount.updatedAt = new Date().toISOString();
+                }
+            }
+        } else if (type === 'payment') {
+            // Reverse debt payment - BOTH accounts go back up
+            if (fromAccountId) {
+                const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
+                if (fromAccount && fromAccount.type === 'asset') {
+                    fromAccount.value += amount; // Restore bank balance
+                    fromAccount.updatedAt = new Date().toISOString();
+                }
+            }
+            if (toAccountId) {
+                const toAccount = this.data.assets.find(a => a.id === toAccountId);
+                if (toAccount && toAccount.type === 'liability') {
+                    toAccount.value += amount; // Debt goes back up
+                    toAccount.updatedAt = new Date().toISOString();
+
+                    // Remove the payment record
+                    if (toAccount.payments) {
+                        toAccount.payments = toAccount.payments.filter(p => p.id !== transaction.id + '-payment');
+                    }
                 }
             }
         }
@@ -807,9 +891,15 @@ class FinanceApp {
         document.getElementById('transaction-modal-title').textContent = 'Edit Transaction';
 
         // Set type first to populate correct categories and account fields
-        document.getElementById(`trans-${trans.type}`).checked = true;
+        const typeRadio = document.getElementById(`trans-${trans.type}`);
+        if (typeRadio) {
+            typeRadio.checked = true;
+        } else {
+            // Fallback for old transactions without proper type
+            document.getElementById('trans-expense').checked = true;
+        }
+
         this.updateTransactionCategories();
-        this.populateAccountDropdowns();
         this.updateTransactionAccountFields();
 
         document.getElementById('trans-amount').value = trans.amount;
@@ -820,13 +910,15 @@ class FinanceApp {
         document.getElementById('trans-date').value = trans.date;
         document.getElementById('trans-notes').value = trans.notes || '';
 
-        // Set account selections
-        if (trans.fromAccountId) {
-            document.getElementById('trans-from-account').value = trans.fromAccountId;
-        }
-        if (trans.toAccountId) {
-            document.getElementById('trans-to-account').value = trans.toAccountId;
-        }
+        // Set account selections after dropdowns are populated
+        setTimeout(() => {
+            if (trans.fromAccountId) {
+                document.getElementById('trans-from-account').value = trans.fromAccountId;
+            }
+            if (trans.toAccountId) {
+                document.getElementById('trans-to-account').value = trans.toAccountId;
+            }
+        }, 0);
 
         this.openModal('transaction-modal');
     }
@@ -905,7 +997,17 @@ class FinanceApp {
         }
 
         tbody.innerHTML = transactions.map(t => {
-            const category = t.categoryId ? this.getCategoryById(t.categoryId) : { name: 'Transfer', color: '#6366f1' };
+            let category;
+            if (t.categoryId) {
+                category = this.getCategoryById(t.categoryId);
+            } else if (t.type === 'transfer') {
+                category = { name: 'Transfer', color: '#6366f1' };
+            } else if (t.type === 'payment') {
+                category = { name: 'Payment', color: '#10b981' };
+            } else {
+                category = { name: 'Other', color: '#64748b' };
+            }
+
             const formattedDate = new Date(t.date).toLocaleDateString();
 
             let amountClass, amountPrefix;
@@ -915,6 +1017,9 @@ class FinanceApp {
             } else if (t.type === 'transfer') {
                 amountClass = 'transfer';
                 amountPrefix = '';
+            } else if (t.type === 'payment') {
+                amountClass = 'payment';
+                amountPrefix = '-';
             } else {
                 amountClass = 'expense';
                 amountPrefix = '-';
@@ -922,12 +1027,13 @@ class FinanceApp {
 
             // Get account info
             let accountInfo = '';
-            if (t.type === 'transfer') {
+            if (t.type === 'transfer' || t.type === 'payment') {
                 const fromAccount = t.fromAccountId ? this.data.assets.find(a => a.id === t.fromAccountId) : null;
                 const toAccount = t.toAccountId ? this.data.assets.find(a => a.id === t.toAccountId) : null;
                 const fromName = fromAccount ? fromAccount.name : 'External';
                 const toName = toAccount ? toAccount.name : 'External';
-                accountInfo = `<span class="transaction-account"><i class="fas fa-exchange-alt"></i> ${fromName} → ${toName}</span>`;
+                const icon = t.type === 'payment' ? 'credit-card' : 'exchange-alt';
+                accountInfo = `<span class="transaction-account"><i class="fas fa-${icon}"></i> ${fromName} → ${toName}</span>`;
             } else if (t.fromAccountId || t.toAccountId) {
                 const accountId = t.fromAccountId || t.toAccountId;
                 const account = this.data.assets.find(a => a.id === accountId);
@@ -1905,27 +2011,63 @@ class FinanceApp {
             if (isFromThis || isToThis) {
                 let isPositive, icon, color, description;
 
-                if (asset.type === 'asset') {
-                    // For assets: money out is negative, money in is positive
-                    isPositive = isToThis;
-                    icon = isToThis ? 'arrow-down' : 'arrow-up';
-                    color = isPositive ? '#10b981' : '#ef4444';
-                } else {
-                    // For liabilities: charges increase balance (negative), payments decrease (positive)
-                    isPositive = isToThis; // Payment to credit card
-                    icon = isToThis ? 'arrow-down' : 'shopping-cart';
-                    color = isPositive ? '#10b981' : '#ef4444';
-                }
-
-                if (t.type === 'transfer') {
+                if (t.type === 'expense') {
+                    // Expense transaction
+                    if (asset.type === 'asset') {
+                        // Bank account: expense means money OUT (negative)
+                        isPositive = false;
+                        icon = 'shopping-cart';
+                        color = '#ef4444';
+                    } else {
+                        // Credit card: expense means charge added (debt increases = negative for you)
+                        isPositive = false;
+                        icon = 'shopping-cart';
+                        color = '#ef4444';
+                    }
+                    description = t.description;
+                } else if (t.type === 'income') {
+                    // Income to this account (always positive - money coming in)
+                    isPositive = true;
+                    icon = 'arrow-down';
+                    color = '#10b981';
+                    description = t.description;
+                } else if (t.type === 'transfer') {
+                    // Transfer between asset accounts
                     const otherAccountId = isFromThis ? t.toAccountId : t.fromAccountId;
                     const otherAccount = this.data.assets.find(a => a.id === otherAccountId);
                     const otherName = otherAccount ? otherAccount.name : 'External';
-                    description = isFromThis ? `Transfer to ${otherName}` : `Transfer from ${otherName}`;
+
+                    if (isFromThis) {
+                        isPositive = false;
+                        description = `Transfer to ${otherName}`;
+                    } else {
+                        isPositive = true;
+                        description = `Transfer from ${otherName}`;
+                    }
                     icon = 'exchange-alt';
                     color = '#6366f1';
+                } else if (t.type === 'payment') {
+                    // Debt payment
+                    const otherAccountId = isFromThis ? t.toAccountId : t.fromAccountId;
+                    const otherAccount = this.data.assets.find(a => a.id === otherAccountId);
+                    const otherName = otherAccount ? otherAccount.name : 'External';
+
+                    if (isFromThis) {
+                        // This is the bank account paying
+                        isPositive = false;
+                        description = `Payment to ${otherName}`;
+                        icon = 'credit-card';
+                        color = '#10b981'; // Green because it's a positive action
+                    } else {
+                        // This is the debt account receiving payment
+                        isPositive = true; // Debt going down is positive!
+                        description = `Payment from ${otherName}`;
+                        icon = 'credit-card';
+                        color = '#10b981';
+                    }
                 } else {
-                    description = t.description;
+                    // Unknown type, skip
+                    return;
                 }
 
                 history.push({
