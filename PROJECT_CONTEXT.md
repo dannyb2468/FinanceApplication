@@ -57,6 +57,10 @@ FinanceTracker/
 10. **PWA** - Installable, offline capable
 11. **Asset Contributions** - Add to retirement/investment accounts, auto-updates value + creates transaction
 12. **Debt Payments** - Track principal vs interest, calculates payoff date, auto-reduces balance
+13. **Expanded Account Types** - Bank (Checking, Savings), Retirement (401k, IRA, Roth, HSA), Investments (Brokerage, Crypto), Credit Cards, Loans
+14. **Account Details** - Institution tracking, account numbers, employer match, contribution limits, YTD progress
+15. **Withdrawal Tracking** - Track withdrawals from any account with reason codes
+16. **Credit Utilization** - Visual progress bar showing credit card usage vs limit
 
 ## Deployment Note
 GitHub Pages requires manually initializing the build/deploy workflow.
@@ -73,8 +77,11 @@ All features working. App deployed and accessible on desktop and mobile.
     recurring: [{ id, type, name, amount, categoryId, frequency, nextDate, linkedAssetId? }],
     assets: [{
         id, type, name, value, category, notes,
-        interestRate?, minPayment?, originalAmount?,  // For liabilities
+        institution?, accountLast4?,                    // For all accounts
+        employerMatch?, contributionLimit?, ytdContribution?,  // For retirement
+        interestRate?, minPayment?, originalAmount?, creditLimit?,  // For liabilities
         contributions: [{ id, amount, date }],         // For assets
+        withdrawals: [{ id, amount, date, reason }],   // For assets
         payments: [{ id, amount, principal, interest, date, balanceAfter }]  // For liabilities
     }],
     networthHistory: [{ date, assets, liabilities, networth }],
