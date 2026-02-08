@@ -55,6 +55,8 @@ FinanceTracker/
 8. **Cloud Sync** - Firebase auth + Firestore real-time sync
 9. **Mobile Nav** - Bottom navigation bar for phones
 10. **PWA** - Installable, offline capable
+11. **Asset Contributions** - Add to retirement/investment accounts, auto-updates value + creates transaction
+12. **Debt Payments** - Track principal vs interest, calculates payoff date, auto-reduces balance
 
 ## Deployment Note
 GitHub Pages requires manually initializing the build/deploy workflow.
@@ -66,10 +68,15 @@ All features working. App deployed and accessible on desktop and mobile.
 ## Data Structure (stored in localStorage + Firestore)
 ```javascript
 {
-    transactions: [{ id, type, amount, description, categoryId, date, notes }],
+    transactions: [{ id, type, amount, description, categoryId, date, notes, linkedAssetId?, linkedDebtId? }],
     budgets: [{ id, categoryId, amount }],
-    recurring: [{ id, type, name, amount, categoryId, frequency, nextDate }],
-    assets: [{ id, type, name, value, category, notes }],
+    recurring: [{ id, type, name, amount, categoryId, frequency, nextDate, linkedAssetId? }],
+    assets: [{
+        id, type, name, value, category, notes,
+        interestRate?, minPayment?, originalAmount?,  // For liabilities
+        contributions: [{ id, amount, date }],         // For assets
+        payments: [{ id, amount, principal, interest, date, balanceAfter }]  // For liabilities
+    }],
     networthHistory: [{ date, assets, liabilities, networth }],
     categories: [{ id, name, color, type }],
     settings: { theme, currency }
