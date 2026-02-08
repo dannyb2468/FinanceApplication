@@ -62,7 +62,11 @@ FinanceTracker/
 15. **Withdrawal Tracking** - Track withdrawals from any account with reason codes
 16. **Credit Utilization** - Visual progress bar showing credit card usage vs limit
 17. **Transaction-Account Linking** - Transactions link to accounts for automatic balance updates
-18. **Transfer Transactions** - Move money between accounts with automatic balance adjustments
+18. **Smart Transaction Types** - Four types with proper accounting logic:
+    - Expense: Pay from bank (decreases) or credit card (increases debt)
+    - Income: Deposit to bank accounts only
+    - Transfer: Move between asset accounts (one down, one up)
+    - Payment: Pay debt from bank (both accounts decrease)
 
 ## Deployment Note
 GitHub Pages requires manually initializing the build/deploy workflow.
