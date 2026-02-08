@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FinanceFlow - Personal Finance Tracker</title>
+
+    <!-- PWA Meta Tags -->
+    <meta name="description" content="Track expenses, budgets, and net worth with FinanceFlow">
+    <meta name="theme-color" content="#6366f1">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="FinanceFlow">
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+
+    <!-- App Icons -->
+    <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+    <link rel="apple-touch-icon" href="icons/icon-152.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-192.png">
+
+    <!-- Stylesheets -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar">
+            <div class="logo">
+                <i class="fas fa-wallet"></i>
+                <span>FinanceFlow</span>
+            </div>
+            <ul class="nav-menu">
+                <li class="nav-item active" data-page="dashboard">
+                    <i class="fas fa-home"></i>
+                    <span>Dashboard</span>
+                </li>
+                <li class="nav-item" data-page="transactions">
+                    <i class="fas fa-exchange-alt"></i>
+                    <span>Transactions</span>
+                </li>
+                <li class="nav-item" data-page="budgets">
+                    <i class="fas fa-piggy-bank"></i>
+                    <span>Budgets</span>
+                </li>
+                <li class="nav-item" data-page="recurring">
+                    <i class="fas fa-sync-alt"></i>
+                    <span>Recurring</span>
+                </li>
+                <li class="nav-item" data-page="networth">
+                    <i class="fas fa-chart-line"></i>
+                    <span>Net Worth</span>
+                </li>
+                <li class="nav-item" data-page="reports">
+                    <i class="fas fa-chart-pie"></i>
+                    <span>Reports</span>
+                </li>
+                <li class="nav-item" data-page="settings">
+                    <i class="fas fa-cog"></i>
+                    <span>Settings</span>
+                </li>
+            </ul>
+            <div class="sidebar-footer">
+                <button class="btn-export" onclick="app.exportData()">
+                    <i class="fas fa-download"></i> Export Data
+                </button>
+            </div>
+        </nav>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Dashboard Page -->
+            <div id="dashboard-page" class="page active">
+                <div class="page-header">
+                    <h1>Dashboard</h1>
+                    <p class="date-display"></p>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card income">
+                        <div class="stat-icon"><i class="fas fa-arrow-down"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-label">Income This Month</span>
+                            <span class="stat-value" id="monthly-income">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="stat-card expenses">
+                        <div class="stat-icon"><i class="fas fa-arrow-up"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-label">Expenses This Month</span>
+                            <span class="stat-value" id="monthly-expenses">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="stat-card balance">
+                        <div class="stat-icon"><i class="fas fa-balance-scale"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-label">Net This Month</span>
+                            <span class="stat-value" id="monthly-balance">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="stat-card networth">
+                        <div class="stat-icon"><i class="fas fa-gem"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-label">Total Net Worth</span>
+                            <span class="stat-value" id="total-networth">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="card budget-overview">
+                        <h3><i class="fas fa-piggy-bank"></i> Budget Overview</h3>
+                        <div id="budget-bars"></div>
+                    </div>
+                    <div class="card spending-chart">
+                        <h3><i class="fas fa-chart-pie"></i> Spending by Category</h3>
+                        <canvas id="spending-pie-chart"></canvas>
+                    </div>
+                    <div class="card recent-transactions">
+                        <h3><i class="fas fa-clock"></i> Recent Transactions</h3>
+                        <div id="recent-transactions-list"></div>
+                    </div>
+                    <div class="card upcoming-recurring">
+                        <h3><i class="fas fa-calendar-alt"></i> Upcoming Recurring</h3>
+                        <div id="upcoming-recurring-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Transactions Page -->
+            <div id="transactions-page" class="page">
+                <div class="page-header">
+                    <h1>Transactions</h1>
+                    <button class="btn-primary" onclick="app.openModal('transaction-modal')">
+                        <i class="fas fa-plus"></i> Add Transaction
+                    </button>
+                </div>
+
+                <div class="filters-bar">
+                    <div class="filter-group">
+                        <label>Type:</label>
+                        <select id="filter-type" onchange="app.filterTransactions()">
+                            <option value="all">All</option>
+                            <option value="income">Income</option>
+                            <option value="expense">Expense</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Category:</label>
+                        <select id="filter-category" onchange="app.filterTransactions()">
+                            <option value="all">All Categories</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Date Range:</label>
+                        <input type="date" id="filter-date-from" onchange="app.filterTransactions()">
+                        <span>to</span>
+                        <input type="date" id="filter-date-to" onchange="app.filterTransactions()">
+                    </div>
+                    <div class="filter-group">
+                        <label>Search:</label>
+                        <input type="text" id="filter-search" placeholder="Search transactions..." oninput="app.filterTransactions()">
+                    </div>
+                </div>
+
+                <div class="card">
+                    <table class="data-table" id="transactions-table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Description</th>
+                                <th>Category</th>
+                                <th>Amount</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="transactions-tbody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Budgets Page -->
+            <div id="budgets-page" class="page">
+                <div class="page-header">
+                    <h1>Budget Management</h1>
+                    <button class="btn-primary" onclick="app.openModal('budget-modal')">
+                        <i class="fas fa-plus"></i> Create Budget
+                    </button>
+                </div>
+
+                <div class="budget-summary-bar">
+                    <div class="budget-summary-item">
+                        <span class="label">Total Budgeted</span>
+                        <span class="value" id="total-budgeted">$0.00</span>
+                    </div>
+                    <div class="budget-summary-item">
+                        <span class="label">Total Spent</span>
+                        <span class="value" id="total-spent">$0.00</span>
+                    </div>
+                    <div class="budget-summary-item">
+                        <span class="label">Remaining</span>
+                        <span class="value" id="total-remaining">$0.00</span>
+                    </div>
+                </div>
+
+                <div class="budgets-grid" id="budgets-grid">
+                </div>
+            </div>
+
+            <!-- Recurring Transactions Page -->
+            <div id="recurring-page" class="page">
+                <div class="page-header">
+                    <h1>Recurring Transactions</h1>
+                    <button class="btn-primary" onclick="app.openModal('recurring-modal')">
+                        <i class="fas fa-plus"></i> Add Recurring
+                    </button>
+                </div>
+
+                <div class="recurring-summary">
+                    <div class="recurring-stat">
+                        <i class="fas fa-arrow-down income-icon"></i>
+                        <div>
+                            <span class="label">Monthly Income</span>
+                            <span class="value" id="recurring-income">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="recurring-stat">
+                        <i class="fas fa-arrow-up expense-icon"></i>
+                        <div>
+                            <span class="label">Monthly Expenses</span>
+                            <span class="value" id="recurring-expenses">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="recurring-stat">
+                        <i class="fas fa-calculator"></i>
+                        <div>
+                            <span class="label">Net Monthly</span>
+                            <span class="value" id="recurring-net">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Category</th>
+                                <th>Amount</th>
+                                <th>Frequency</th>
+                                <th>Next Due</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recurring-tbody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Net Worth Page -->
+            <div id="networth-page" class="page">
+                <div class="page-header">
+                    <h1>Net Worth Tracker</h1>
+                    <button class="btn-primary" onclick="app.openModal('asset-modal')">
+                        <i class="fas fa-plus"></i> Add Asset/Liability
+                    </button>
+                </div>
+
+                <div class="networth-summary">
+                    <div class="networth-card assets">
+                        <i class="fas fa-university"></i>
+                        <div>
+                            <span class="label">Total Assets</span>
+                            <span class="value" id="total-assets">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="networth-card liabilities">
+                        <i class="fas fa-credit-card"></i>
+                        <div>
+                            <span class="label">Total Liabilities</span>
+                            <span class="value" id="total-liabilities">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="networth-card net">
+                        <i class="fas fa-gem"></i>
+                        <div>
+                            <span class="label">Net Worth</span>
+                            <span class="value" id="networth-value">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="networth-grid">
+                    <div class="card">
+                        <h3><i class="fas fa-university"></i> Assets</h3>
+                        <div id="assets-list"></div>
+                    </div>
+                    <div class="card">
+                        <h3><i class="fas fa-credit-card"></i> Liabilities</h3>
+                        <div id="liabilities-list"></div>
+                    </div>
+                </div>
+
+                <div class="card networth-history-card">
+                    <h3><i class="fas fa-chart-line"></i> Net Worth Over Time</h3>
+                    <canvas id="networth-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- Reports Page -->
+            <div id="reports-page" class="page">
+                <div class="page-header">
+                    <h1>Reports & Analytics</h1>
+                    <div class="report-period-selector">
+                        <select id="report-period" onchange="app.updateReports()">
+                            <option value="thisMonth">This Month</option>
+                            <option value="lastMonth">Last Month</option>
+                            <option value="last3Months">Last 3 Months</option>
+                            <option value="last6Months">Last 6 Months</option>
+                            <option value="thisYear">This Year</option>
+                            <option value="allTime">All Time</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="reports-grid">
+                    <div class="card chart-card">
+                        <h3><i class="fas fa-chart-bar"></i> Income vs Expenses</h3>
+                        <canvas id="income-expense-chart"></canvas>
+                    </div>
+                    <div class="card chart-card">
+                        <h3><i class="fas fa-chart-pie"></i> Expense Breakdown</h3>
+                        <canvas id="expense-breakdown-chart"></canvas>
+                    </div>
+                    <div class="card chart-card">
+                        <h3><i class="fas fa-chart-line"></i> Spending Trend</h3>
+                        <canvas id="spending-trend-chart"></canvas>
+                    </div>
+                    <div class="card chart-card">
+                        <h3><i class="fas fa-chart-area"></i> Savings Rate</h3>
+                        <canvas id="savings-chart"></canvas>
+                    </div>
+                </div>
+
+                <div class="card stats-table-card">
+                    <h3><i class="fas fa-table"></i> Category Statistics</h3>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Category</th>
+                                <th>Total Spent</th>
+                                <th>Transactions</th>
+                                <th>Average</th>
+                                <th>% of Total</th>
+                            </tr>
+                        </thead>
+                        <tbody id="category-stats-tbody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Settings Page -->
+            <div id="settings-page" class="page">
+                <div class="page-header">
+                    <h1>Settings</h1>
+                </div>
+
+                <div class="settings-grid">
+                    <div class="card settings-card">
+                        <h3><i class="fas fa-palette"></i> Appearance</h3>
+                        <div class="setting-item">
+                            <label>Theme</label>
+                            <select id="theme-select" onchange="app.setTheme(this.value)">
+                                <option value="light">Light</option>
+                                <option value="dark">Dark</option>
+                                <option value="auto">System Default</option>
+                            </select>
+                        </div>
+                        <div class="setting-item">
+                            <label>Currency Symbol</label>
+                            <select id="currency-select" onchange="app.setCurrency(this.value)">
+                                <option value="$">$ (USD)</option>
+                                <option value="€">€ (EUR)</option>
+                                <option value="£">£ (GBP)</option>
+                                <option value="¥">¥ (JPY/CNY)</option>
+                                <option value="₹">₹ (INR)</option>
+                                <option value="₿">₿ (BTC)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="card settings-card">
+                        <h3><i class="fas fa-tags"></i> Categories</h3>
+                        <div class="categories-list" id="categories-list"></div>
+                        <div class="add-category-form">
+                            <input type="text" id="new-category-name" placeholder="Category name">
+                            <input type="color" id="new-category-color" value="#6366f1">
+                            <select id="new-category-type">
+                                <option value="expense">Expense</option>
+                                <option value="income">Income</option>
+                            </select>
+                            <button class="btn-primary" onclick="app.addCategory()">
+                                <i class="fas fa-plus"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="card settings-card">
+                        <h3><i class="fas fa-database"></i> Data Management</h3>
+                        <div class="data-actions">
+                            <button class="btn-secondary" onclick="app.exportData()">
+                                <i class="fas fa-download"></i> Export All Data
+                            </button>
+                            <label class="btn-secondary file-input-label">
+                                <i class="fas fa-upload"></i> Import Data
+                                <input type="file" id="import-file" accept=".json" onchange="app.importData(event)" hidden>
+                            </label>
+                            <button class="btn-danger" onclick="app.confirmClearData()">
+                                <i class="fas fa-trash"></i> Clear All Data
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="card settings-card">
+                        <h3><i class="fas fa-info-circle"></i> About</h3>
+                        <div class="about-info">
+                            <p><strong>FinanceFlow</strong> v1.0</p>
+                            <p>A personal finance tracking application that stores all data locally in your browser.</p>
+                            <p class="privacy-note"><i class="fas fa-lock"></i> Your data never leaves your device.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Transaction Modal -->
+    <div id="transaction-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="transaction-modal-title">Add Transaction</h2>
+                <button class="modal-close" onclick="app.closeModal('transaction-modal')">&times;</button>
+            </div>
+            <form id="transaction-form" onsubmit="app.saveTransaction(event)">
+                <input type="hidden" id="transaction-id">
+                <div class="form-group">
+                    <label>Type</label>
+                    <div class="toggle-group">
+                        <input type="radio" name="trans-type" id="trans-expense" value="expense" checked>
+                        <label for="trans-expense" class="toggle-btn">Expense</label>
+                        <input type="radio" name="trans-type" id="trans-income" value="income">
+                        <label for="trans-income" class="toggle-btn">Income</label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="trans-amount">Amount</label>
+                    <input type="number" id="trans-amount" step="0.01" min="0" required placeholder="0.00">
+                </div>
+                <div class="form-group">
+                    <label for="trans-description">Description</label>
+                    <input type="text" id="trans-description" required placeholder="What was this for?">
+                </div>
+                <div class="form-group">
+                    <label for="trans-category">Category</label>
+                    <select id="trans-category" required></select>
+                </div>
+                <div class="form-group">
+                    <label for="trans-date">Date</label>
+                    <input type="date" id="trans-date" required>
+                </div>
+                <div class="form-group">
+                    <label for="trans-notes">Notes (Optional)</label>
+                    <textarea id="trans-notes" placeholder="Additional details..."></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary" onclick="app.closeModal('transaction-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary">Save Transaction</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Budget Modal -->
+    <div id="budget-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="budget-modal-title">Create Budget</h2>
+                <button class="modal-close" onclick="app.closeModal('budget-modal')">&times;</button>
+            </div>
+            <form id="budget-form" onsubmit="app.saveBudget(event)">
+                <input type="hidden" id="budget-id">
+                <div class="form-group">
+                    <label for="budget-category">Category</label>
+                    <select id="budget-category" required></select>
+                </div>
+                <div class="form-group">
+                    <label for="budget-amount">Monthly Budget Amount</label>
+                    <input type="number" id="budget-amount" step="0.01" min="0" required placeholder="0.00">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary" onclick="app.closeModal('budget-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary">Save Budget</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Recurring Modal -->
+    <div id="recurring-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="recurring-modal-title">Add Recurring Transaction</h2>
+                <button class="modal-close" onclick="app.closeModal('recurring-modal')">&times;</button>
+            </div>
+            <form id="recurring-form" onsubmit="app.saveRecurring(event)">
+                <input type="hidden" id="recurring-id">
+                <div class="form-group">
+                    <label>Type</label>
+                    <div class="toggle-group">
+                        <input type="radio" name="rec-type" id="rec-expense" value="expense" checked>
+                        <label for="rec-expense" class="toggle-btn">Expense</label>
+                        <input type="radio" name="rec-type" id="rec-income" value="income">
+                        <label for="rec-income" class="toggle-btn">Income</label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="rec-name">Name</label>
+                    <input type="text" id="rec-name" required placeholder="e.g., Netflix, Salary">
+                </div>
+                <div class="form-group">
+                    <label for="rec-amount">Amount</label>
+                    <input type="number" id="rec-amount" step="0.01" min="0" required placeholder="0.00">
+                </div>
+                <div class="form-group">
+                    <label for="rec-category">Category</label>
+                    <select id="rec-category" required></select>
+                </div>
+                <div class="form-group">
+                    <label for="rec-frequency">Frequency</label>
+                    <select id="rec-frequency" required>
+                        <option value="weekly">Weekly</option>
+                        <option value="biweekly">Bi-Weekly</option>
+                        <option value="monthly" selected>Monthly</option>
+                        <option value="quarterly">Quarterly</option>
+                        <option value="yearly">Yearly</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="rec-next-date">Next Due Date</label>
+                    <input type="date" id="rec-next-date" required>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary" onclick="app.closeModal('recurring-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary">Save Recurring</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Asset/Liability Modal -->
+    <div id="asset-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="asset-modal-title">Add Asset/Liability</h2>
+                <button class="modal-close" onclick="app.closeModal('asset-modal')">&times;</button>
+            </div>
+            <form id="asset-form" onsubmit="app.saveAsset(event)">
+                <input type="hidden" id="asset-id">
+                <div class="form-group">
+                    <label>Type</label>
+                    <div class="toggle-group">
+                        <input type="radio" name="asset-type" id="asset-asset" value="asset" checked>
+                        <label for="asset-asset" class="toggle-btn">Asset</label>
+                        <input type="radio" name="asset-type" id="asset-liability" value="liability">
+                        <label for="asset-liability" class="toggle-btn">Liability</label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="asset-name">Name</label>
+                    <input type="text" id="asset-name" required placeholder="e.g., Savings Account, Car Loan">
+                </div>
+                <div class="form-group">
+                    <label for="asset-value">Current Value</label>
+                    <input type="number" id="asset-value" step="0.01" min="0" required placeholder="0.00">
+                </div>
+                <div class="form-group">
+                    <label for="asset-category-select">Category</label>
+                    <select id="asset-category-select" required>
+                        <optgroup label="Assets">
+                            <option value="cash">Cash & Bank Accounts</option>
+                            <option value="investments">Investments</option>
+                            <option value="retirement">Retirement Accounts</option>
+                            <option value="property">Property</option>
+                            <option value="vehicles">Vehicles</option>
+                            <option value="other-asset">Other Assets</option>
+                        </optgroup>
+                        <optgroup label="Liabilities">
+                            <option value="credit-cards">Credit Cards</option>
+                            <option value="loans">Loans</option>
+                            <option value="mortgage">Mortgage</option>
+                            <option value="other-liability">Other Liabilities</option>
+                        </optgroup>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="asset-notes">Notes (Optional)</label>
+                    <textarea id="asset-notes" placeholder="Additional details..."></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary" onclick="app.closeModal('asset-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Confirm Dialog -->
+    <div id="confirm-dialog" class="modal">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h2 id="confirm-title">Confirm</h2>
+                <button class="modal-close" onclick="app.closeModal('confirm-dialog')">&times;</button>
+            </div>
+            <p id="confirm-message"></p>
+            <div class="modal-actions">
+                <button class="btn-secondary" onclick="app.closeModal('confirm-dialog')">Cancel</button>
+                <button class="btn-danger" id="confirm-action-btn">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
+    <script src="app.js"></script>
+
+    <!-- Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then((registration) => {
+                        console.log('FinanceFlow: Service Worker registered');
+                    })
+                    .catch((error) => {
+                        console.log('FinanceFlow: Service Worker registration failed:', error);
+                    });
+            });
+        }
+    </script>
+</body>
+</html>

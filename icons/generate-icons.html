@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Generate FinanceFlow Icons</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f1f5f9;
+        }
+        h1 { color: #1e293b; }
+        .icon-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .icon-item {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .icon-item canvas {
+            border-radius: 20%;
+            margin-bottom: 10px;
+        }
+        .icon-item a {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 8px 16px;
+            background: #6366f1;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .icon-item a:hover {
+            background: #4f46e5;
+        }
+        .instructions {
+            background: #dbeafe;
+            border: 1px solid #3b82f6;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+        .success {
+            background: #d1fae5;
+            border: 1px solid #10b981;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 20px 0;
+            display: none;
+        }
+        #download-all {
+            padding: 12px 24px;
+            background: #10b981;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        #download-all:hover {
+            background: #059669;
+        }
+    </style>
+</head>
+<body>
+    <h1>FinanceFlow Icon Generator</h1>
+
+    <div class="instructions">
+        <strong>Instructions:</strong>
+        <ol>
+            <li>Click "Download All Icons" or download each size individually</li>
+            <li>Save them to the <code>icons</code> folder (same folder as this file)</li>
+            <li>Once done, you can delete this generator file</li>
+        </ol>
+    </div>
+
+    <button id="download-all">Download All Icons</button>
+
+    <div class="success" id="success-msg">
+        All icons downloaded! Move them to the icons folder if they went to Downloads.
+    </div>
+
+    <div class="icon-grid" id="icon-grid"></div>
+
+    <script>
+        const sizes = [72, 96, 128, 144, 152, 192, 384, 512];
+        const grid = document.getElementById('icon-grid');
+
+        // SVG content
+        const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+            <defs>
+                <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" style="stop-color:#6366f1"/>
+                    <stop offset="100%" style="stop-color:#4f46e5"/>
+                </linearGradient>
+            </defs>
+            <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+            <g transform="translate(96, 120)">
+                <rect x="20" y="60" width="280" height="180" rx="24" fill="white" opacity="0.95"/>
+                <path d="M20 100 Q20 60 60 60 L260 60 Q300 60 300 100 L300 120 L20 120 Z" fill="white"/>
+                <rect x="60" y="100" width="120" height="8" rx="4" fill="#6366f1" opacity="0.3"/>
+                <rect x="60" y="125" width="80" height="8" rx="4" fill="#6366f1" opacity="0.2"/>
+                <circle cx="240" cy="170" r="40" fill="#10b981"/>
+                <text x="240" y="185" text-anchor="middle" fill="white" font-family="Arial" font-weight="bold" font-size="40">$</text>
+            </g>
+            <g transform="translate(120, 340)">
+                <rect x="0" y="40" width="40" height="60" rx="8" fill="white" opacity="0.4"/>
+                <rect x="60" y="20" width="40" height="80" rx="8" fill="white" opacity="0.6"/>
+                <rect x="120" y="0" width="40" height="100" rx="8" fill="white" opacity="0.8"/>
+                <rect x="180" y="30" width="40" height="70" rx="8" fill="#10b981" opacity="0.9"/>
+                <rect x="240" y="10" width="40" height="90" rx="8" fill="#10b981"/>
+            </g>
+        </svg>`;
+
+        function generateIcon(size) {
+            return new Promise((resolve) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+
+                const img = new Image();
+                const blob = new Blob([svgContent], { type: 'image/svg+xml' });
+                const url = URL.createObjectURL(blob);
+
+                img.onload = () => {
+                    ctx.drawImage(img, 0, 0, size, size);
+                    URL.revokeObjectURL(url);
+                    resolve(canvas);
+                };
+                img.src = url;
+            });
+        }
+
+        async function createIconElements() {
+            for (const size of sizes) {
+                const canvas = await generateIcon(size);
+
+                const item = document.createElement('div');
+                item.className = 'icon-item';
+
+                const displayCanvas = document.createElement('canvas');
+                const displaySize = Math.min(size, 128);
+                displayCanvas.width = displaySize;
+                displayCanvas.height = displaySize;
+                displayCanvas.getContext('2d').drawImage(canvas, 0, 0, displaySize, displaySize);
+
+                const label = document.createElement('div');
+                label.textContent = `${size}x${size}`;
+
+                const link = document.createElement('a');
+                link.href = canvas.toDataURL('image/png');
+                link.download = `icon-${size}.png`;
+                link.textContent = 'Download';
+
+                item.appendChild(displayCanvas);
+                item.appendChild(label);
+                item.appendChild(link);
+                grid.appendChild(item);
+            }
+        }
+
+        document.getElementById('download-all').addEventListener('click', async () => {
+            for (const size of sizes) {
+                const canvas = await generateIcon(size);
+                const link = document.createElement('a');
+                link.href = canvas.toDataURL('image/png');
+                link.download = `icon-${size}.png`;
+                link.click();
+                await new Promise(r => setTimeout(r, 300)); // Small delay between downloads
+            }
+            document.getElementById('success-msg').style.display = 'block';
+        });
+
+        createIconElements();
+    </script>
+</body>
+</html>
