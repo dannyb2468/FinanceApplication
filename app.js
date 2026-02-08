@@ -83,19 +83,77 @@ class FinanceApp {
     }
 
     setupNavigation() {
+        // Desktop sidebar navigation
         const navItems = document.querySelectorAll('.nav-item');
         navItems.forEach(item => {
             item.addEventListener('click', () => {
                 const page = item.dataset.page;
                 this.navigateTo(page);
+                this.closeSidebar();
             });
+        });
+
+        // Mobile bottom navigation
+        const mobileNavItems = document.querySelectorAll('.mobile-nav-item');
+        mobileNavItems.forEach(item => {
+            item.addEventListener('click', () => {
+                const page = item.dataset.page;
+                if (page === 'more') {
+                    this.toggleMoreMenu();
+                } else {
+                    this.navigateTo(page);
+                    this.closeMoreMenu();
+                }
+            });
+        });
+
+        // Mobile more menu items
+        const moreItems = document.querySelectorAll('.mobile-more-item');
+        moreItems.forEach(item => {
+            item.addEventListener('click', () => {
+                const page = item.dataset.page;
+                this.navigateTo(page);
+                this.closeMoreMenu();
+            });
+        });
+
+        // Close more menu when clicking outside
+        document.getElementById('mobile-more-menu').addEventListener('click', (e) => {
+            if (e.target.id === 'mobile-more-menu') {
+                this.closeMoreMenu();
+            }
         });
     }
 
+    toggleSidebar() {
+        document.querySelector('.sidebar').classList.toggle('open');
+    }
+
+    closeSidebar() {
+        document.querySelector('.sidebar').classList.remove('open');
+    }
+
+    toggleMoreMenu() {
+        document.getElementById('mobile-more-menu').classList.toggle('active');
+        document.querySelector('.mobile-nav-item[data-page="more"]').classList.toggle('active');
+    }
+
+    closeMoreMenu() {
+        document.getElementById('mobile-more-menu').classList.remove('active');
+        document.querySelector('.mobile-nav-item[data-page="more"]').classList.remove('active');
+    }
+
     navigateTo(page) {
-        // Update nav
+        // Update desktop nav
         document.querySelectorAll('.nav-item').forEach(item => {
             item.classList.toggle('active', item.dataset.page === page);
+        });
+
+        // Update mobile nav
+        document.querySelectorAll('.mobile-nav-item').forEach(item => {
+            if (item.dataset.page !== 'more') {
+                item.classList.toggle('active', item.dataset.page === page);
+            }
         });
 
         // Update pages
