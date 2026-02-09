@@ -1,5 +1,5 @@
 // FinanceFlow Service Worker
-const CACHE_NAME = 'financeflow-v2';
+const CACHE_NAME = 'financeflow-v3';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',

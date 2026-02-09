@@ -1,13 +1,10 @@
 /**
- * FinanceFlow - Personal Finance Tracker
- * A comprehensive financial management application
+ * FinanceFlow v2.0 - Personal Finance Tracker
  */
-
 class FinanceApp {
     constructor() {
         this.data = {
             transactions: [],
-            budgets: [],
             recurring: [],
             assets: [],
             networthHistory: [],
@@ -15,19 +12,18 @@ class FinanceApp {
             envelopes: [],
             incomeSources: [],
             paycheckHistory: [],
-            settings: {
-                theme: 'light',
-                currency: '$'
-            }
+            settings: { theme: 'light', currency: '$', onboardingComplete: false, userName: '' }
         };
-
         this.charts = {};
         this.currentUser = null;
-        this.authMode = 'signin'; // 'signin' or 'signup'
+        this.authMode = 'signin';
         this.unsubscribeFirestore = null;
         this.isSyncing = false;
         this.transactionPage = 1;
         this.transactionsPerPage = 25;
+        this.onboardingStep = 1;
+        this.onboardAccounts = [];
+        this.onboardIncome = [];
 
         this.defaultCategories = [
             { id: 'salary', name: 'Salary', color: '#10b981', type: 'income' },
@@ -60,12 +56,45 @@ class FinanceApp {
 
     escapeHtml(str) {
         if (str === null || str === undefined) return '';
-        return String(str)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+
+    todayLocal() {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    parseDateLocal(dateStr) {
+        const [y, m, d] = dateStr.split('-').map(Number);
+        return new Date(y, m - 1, d);
+    }
+
+    formatDateLocal(dateStr) {
+        const d = this.parseDateLocal(dateStr);
+        return d.toLocaleDateString();
+    }
+
+    formatCurrency(amount) {
+        const c = this.data.settings.currency;
+        const prefix = amount < 0 ? '-' : '';
+        return `${prefix}${c}${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    formatAccountType(category) {
+        const types = {
+            'checking': 'Checking Account', 'savings': 'Savings Account', 'cash': 'Cash',
+            'brokerage': 'Brokerage Account', 'crypto': 'Cryptocurrency',
+            '401k': '401(k)', '403b': '403(b)', 'ira': 'Traditional IRA', 'roth-ira': 'Roth IRA',
+            'pension': 'Pension', 'hsa': 'HSA', 'fsa': 'FSA', '529': '529 College Savings',
+            'property': 'Property/Real Estate', 'vehicles': 'Vehicles', 'other-asset': 'Other Assets',
+            'credit-card': 'Credit Card', 'auto-loan': 'Auto Loan', 'personal-loan': 'Personal Loan',
+            'student-loan': 'Student Loan', 'mortgage': 'Mortgage', 'heloc': 'HELOC', 'other-debt': 'Other Debt'
+        };
+        return types[category] || category;
+    }
+
+    generateId() {
+        return Date.now().toString() + Math.random().toString(36).substr(2, 9);
     }
 
     // ==========================================
@@ -74,18 +103,144 @@ class FinanceApp {
 
     init() {
         this.loadData();
+        this.migrateData();
         this.initializeCategories();
+        this.resetMonthlySpent();
         this.setupNavigation();
         this.setupTheme();
+        this.setupEventListeners();
         this.updateDateDisplay();
         this.processRecurringTransactions();
         this.renderAll();
-        this.setupFormListeners();
         this.setupAuth();
 
-        // Set default date to today
-        document.getElementById('trans-date').valueAsDate = new Date();
-        document.getElementById('rec-next-date').valueAsDate = new Date();
+        document.getElementById('trans-date').value = this.todayLocal();
+        document.getElementById('rec-next-date').value = this.todayLocal();
+
+        if (!this.data.settings.onboardingComplete && this.data.transactions.length === 0 && this.data.assets.length === 0) {
+            this.showOnboarding();
+        }
+    }
+
+    loadData() {
+        const saved = localStorage.getItem('financeflow_data');
+        if (saved) {
+            try {
+                const parsed = JSON.parse(saved);
+                this.data = { ...this.data, ...parsed };
+            } catch (e) { /* ignore corrupt data */ }
+        }
+    }
+
+    migrateData() {
+        if (this.data.version === 2) return;
+
+        // Migrate envelopes: accountBalances+ccPending → single balance
+        (this.data.envelopes || []).forEach(env => {
+            if (env.accountBalances !== undefined || env.ccPending !== undefined) {
+                const acctTotal = Object.values(env.accountBalances || {}).reduce((s, v) => s + v, 0);
+                env.balance = acctTotal - (env.ccPending || 0);
+                delete env.accountBalances;
+                delete env.ccPending;
+            }
+            if (env.balance === undefined) env.balance = 0;
+            if (env.spent === undefined) env.spent = 0;
+            if (!env.lastResetDate) env.lastResetDate = new Date().toISOString().split('T')[0];
+        });
+
+        // Migrate budgets → envelope targets
+        if (this.data.budgets && this.data.budgets.length > 0) {
+            this.data.budgets.forEach(budget => {
+                const existing = (this.data.envelopes || []).find(e => e.linkedCategoryId === budget.categoryId);
+                if (existing) {
+                    if (!existing.targetAmount) existing.targetAmount = budget.amount;
+                } else {
+                    const cat = this.data.categories.find(c => c.id === budget.categoryId);
+                    if (!this.data.envelopes) this.data.envelopes = [];
+                    this.data.envelopes.push({
+                        id: this.generateId(),
+                        name: cat ? cat.name : 'Budget',
+                        color: cat ? cat.color : '#6366f1',
+                        balance: 0,
+                        targetAmount: budget.amount,
+                        targetFrequency: 'monthly',
+                        linkedCategoryId: budget.categoryId,
+                        linkedAccountId: null,
+                        spent: 0,
+                        lastResetDate: new Date().toISOString().split('T')[0],
+                        createdAt: new Date().toISOString()
+                    });
+                }
+            });
+            delete this.data.budgets;
+        }
+
+        // Simplify income source templates
+        (this.data.incomeSources || []).forEach(source => {
+            if (source.allocationTemplate) {
+                const newTemplate = {};
+                for (const [key, val] of Object.entries(source.allocationTemplate)) {
+                    newTemplate[key] = typeof val === 'object' ? val.amount : val;
+                }
+                source.allocationTemplate = newTemplate;
+            }
+        });
+
+        // Expand settings
+        if (!this.data.settings) this.data.settings = {};
+        if (this.data.settings.onboardingComplete === undefined) this.data.settings.onboardingComplete = true;
+        if (!this.data.settings.userName) this.data.settings.userName = '';
+
+        this.data.version = 2;
+        this.saveDataLocal();
+    }
+
+    initializeCategories() {
+        if (this.data.categories.length === 0) {
+            this.data.categories = [...this.defaultCategories];
+            this.saveData();
+        }
+    }
+
+    resetMonthlySpent() {
+        const now = new Date();
+        const currentMonth = `${now.getFullYear()}-${now.getMonth()}`;
+        (this.data.envelopes || []).forEach(env => {
+            if (env.lastResetDate) {
+                const d = this.parseDateLocal(env.lastResetDate);
+                const envMonth = `${d.getFullYear()}-${d.getMonth()}`;
+                if (envMonth !== currentMonth) {
+                    env.spent = 0;
+                    env.lastResetDate = now.toISOString().split('T')[0];
+                }
+            }
+        });
+    }
+
+    updateDateDisplay() {
+        const el = document.querySelector('.date-display');
+        if (el) el.textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+        const greeting = document.getElementById('dashboard-greeting');
+        if (greeting) {
+            const hour = new Date().getHours();
+            const timeGreet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+            const name = this.data.settings.userName;
+            greeting.textContent = name ? `${timeGreet}, ${name}` : 'Dashboard';
+        }
+    }
+
+    // ==========================================
+    // DATA PERSISTENCE
+    // ==========================================
+
+    saveDataLocal() {
+        localStorage.setItem('financeflow_data', JSON.stringify(this.data));
+    }
+
+    saveData() {
+        this.saveDataLocal();
+        if (this.currentUser) this.syncToCloud();
     }
 
     // ==========================================
@@ -97,15 +252,9 @@ class FinanceApp {
             if (window.firebaseAuth && window.firebaseFunctions) {
                 clearInterval(checkFirebase);
                 const { onAuthStateChanged } = window.firebaseFunctions;
-
                 onAuthStateChanged(window.firebaseAuth, (user) => {
-                    if (user) {
-                        this.currentUser = user;
-                        this.onUserSignedIn(user);
-                    } else {
-                        this.currentUser = null;
-                        this.onUserSignedOut();
-                    }
+                    if (user) { this.currentUser = user; this.onUserSignedIn(user); }
+                    else { this.currentUser = null; this.onUserSignedOut(); }
                 });
             }
         }, 100);
@@ -122,10 +271,7 @@ class FinanceApp {
     onUserSignedOut() {
         document.getElementById('user-section').style.display = 'none';
         document.getElementById('sign-in-btn').style.display = 'block';
-        if (this.unsubscribeFirestore) {
-            this.unsubscribeFirestore();
-            this.unsubscribeFirestore = null;
-        }
+        if (this.unsubscribeFirestore) { this.unsubscribeFirestore(); this.unsubscribeFirestore = null; }
     }
 
     async handleAuth(event) {
@@ -133,45 +279,34 @@ class FinanceApp {
         const email = document.getElementById('auth-email').value;
         const password = document.getElementById('auth-password').value;
         const errorEl = document.getElementById('auth-error');
-
         try {
             errorEl.textContent = '';
             const { signInWithEmailAndPassword, createUserWithEmailAndPassword } = window.firebaseFunctions;
-
-            if (this.authMode === 'signin') {
-                await signInWithEmailAndPassword(window.firebaseAuth, email, password);
-            } else {
-                await createUserWithEmailAndPassword(window.firebaseAuth, email, password);
-            }
+            if (this.authMode === 'signin') await signInWithEmailAndPassword(window.firebaseAuth, email, password);
+            else await createUserWithEmailAndPassword(window.firebaseAuth, email, password);
             this.closeModal('auth-modal');
             document.getElementById('auth-form').reset();
         } catch (error) {
-            let message = 'An error occurred';
-            if (error.code === 'auth/user-not-found') message = 'No account found with this email';
-            else if (error.code === 'auth/wrong-password') message = 'Incorrect password';
-            else if (error.code === 'auth/email-already-in-use') message = 'Email already in use';
-            else if (error.code === 'auth/weak-password') message = 'Password should be at least 6 characters';
-            else if (error.code === 'auth/invalid-email') message = 'Invalid email address';
-            else if (error.code === 'auth/invalid-credential') message = 'Invalid email or password';
-            errorEl.textContent = message;
+            const messages = {
+                'auth/user-not-found': 'No account found with this email',
+                'auth/wrong-password': 'Incorrect password',
+                'auth/email-already-in-use': 'Email already in use',
+                'auth/weak-password': 'Password should be at least 6 characters',
+                'auth/invalid-email': 'Invalid email address',
+                'auth/invalid-credential': 'Invalid email or password'
+            };
+            errorEl.textContent = messages[error.code] || 'An error occurred';
         }
     }
 
     toggleAuthMode(event) {
-        event.preventDefault();
-        if (this.authMode === 'signin') {
-            this.authMode = 'signup';
-            document.getElementById('auth-modal-title').textContent = 'Create Account';
-            document.getElementById('auth-submit-btn').textContent = 'Sign Up';
-            document.getElementById('auth-toggle-text').textContent = 'Already have an account?';
-            document.getElementById('auth-toggle-link').textContent = 'Sign In';
-        } else {
-            this.authMode = 'signin';
-            document.getElementById('auth-modal-title').textContent = 'Sign In';
-            document.getElementById('auth-submit-btn').textContent = 'Sign In';
-            document.getElementById('auth-toggle-text').textContent = "Don't have an account?";
-            document.getElementById('auth-toggle-link').textContent = 'Sign Up';
-        }
+        if (event) event.preventDefault();
+        const isSignin = this.authMode === 'signin';
+        this.authMode = isSignin ? 'signup' : 'signin';
+        document.getElementById('auth-modal-title').textContent = isSignin ? 'Create Account' : 'Sign In';
+        document.getElementById('auth-submit-btn').textContent = isSignin ? 'Sign Up' : 'Sign In';
+        document.getElementById('auth-toggle-text').textContent = isSignin ? 'Already have an account?' : "Don't have an account?";
+        document.getElementById('auth-toggle-link').textContent = isSignin ? 'Sign In' : 'Sign Up';
         document.getElementById('auth-error').textContent = '';
     }
 
@@ -180,351 +315,361 @@ class FinanceApp {
             const { signOut } = window.firebaseFunctions;
             await signOut(window.firebaseAuth);
             this.showToast('Signed out', 'success');
-        } catch (error) {
-            this.showToast('Error signing out', 'error');
-        }
+        } catch (e) { this.showToast('Error signing out', 'error'); }
     }
 
     startFirestoreSync() {
         if (!this.currentUser) return;
         const { doc, onSnapshot } = window.firebaseFunctions;
         const userDocRef = doc(window.firebaseDb, 'users', this.currentUser.uid);
-
         this.updateSyncStatus('syncing');
-
-        this.unsubscribeFirestore = onSnapshot(userDocRef, (docSnapshot) => {
-            if (docSnapshot.exists()) {
-                const cloudData = docSnapshot.data();
+        this.unsubscribeFirestore = onSnapshot(userDocRef, (snap) => {
+            if (snap.exists()) {
+                const cloudData = snap.data();
                 if (cloudData.data) {
                     this.data = { ...this.data, ...cloudData.data };
+                    this.migrateData();
                     this.saveDataLocal();
                     this.renderAll();
                 }
-            } else {
-                this.syncToCloud();
-            }
+            } else { this.syncToCloud(); }
             this.updateSyncStatus('synced');
-        }, (error) => {
-            console.error('Firestore sync error:', error);
-            this.updateSyncStatus('error');
-        });
+        }, () => { this.updateSyncStatus('error'); });
     }
 
     async syncToCloud() {
         if (!this.currentUser || this.isSyncing) return;
         this.isSyncing = true;
         this.updateSyncStatus('syncing');
-
         try {
             const { doc, setDoc } = window.firebaseFunctions;
-            const userDocRef = doc(window.firebaseDb, 'users', this.currentUser.uid);
-            await setDoc(userDocRef, {
-                data: this.data,
-                updatedAt: new Date().toISOString(),
-                email: this.currentUser.email
+            await setDoc(doc(window.firebaseDb, 'users', this.currentUser.uid), {
+                data: this.data, updatedAt: new Date().toISOString(), email: this.currentUser.email
             });
             this.updateSyncStatus('synced');
-        } catch (error) {
-            console.error('Error syncing to cloud:', error);
-            this.updateSyncStatus('error');
-        } finally {
-            this.isSyncing = false;
-        }
+        } catch (e) { this.updateSyncStatus('error'); }
+        finally { this.isSyncing = false; }
     }
 
     updateSyncStatus(status) {
         const el = document.getElementById('sync-status');
         if (!el) return;
         el.className = 'sync-status ' + status;
-        if (status === 'syncing') {
-            el.innerHTML = '<i class="fas fa-sync fa-spin"></i><span>Syncing...</span>';
-        } else if (status === 'synced') {
-            el.innerHTML = '<i class="fas fa-cloud"></i><span>Synced</span>';
-        } else {
-            el.innerHTML = '<i class="fas fa-exclamation-triangle"></i><span>Sync error</span>';
-        }
+        const icons = { syncing: 'sync fa-spin', synced: 'cloud', error: 'exclamation-triangle' };
+        const texts = { syncing: 'Syncing...', synced: 'Synced', error: 'Sync error' };
+        el.innerHTML = `<i class="fas fa-${icons[status]}"></i><span>${texts[status]}</span>`;
     }
 
-    saveDataLocal() {
-        localStorage.setItem('financeflow_data', JSON.stringify(this.data));
-    }
-
-    loadData() {
-        const saved = localStorage.getItem('financeflow_data');
-        if (saved) {
-            const parsed = JSON.parse(saved);
-            this.data = { ...this.data, ...parsed };
-        }
-    }
-
-    saveData() {
-        localStorage.setItem('financeflow_data', JSON.stringify(this.data));
-        // Sync to cloud if signed in
-        if (this.currentUser) {
-            this.syncToCloud();
-        }
-    }
-
-    initializeCategories() {
-        if (this.data.categories.length === 0) {
-            this.data.categories = [...this.defaultCategories];
-            this.saveData();
-        }
-    }
+    // ==========================================
+    // NAVIGATION
+    // ==========================================
 
     setupNavigation() {
-        // Desktop sidebar navigation
-        const navItems = document.querySelectorAll('.nav-item');
-        navItems.forEach(item => {
-            item.addEventListener('click', () => {
-                const page = item.dataset.page;
-                this.navigateTo(page);
-                this.closeSidebar();
-            });
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => { this.navigateTo(item.dataset.page); this.closeSidebar(); });
         });
-
-        // Mobile bottom navigation
-        const mobileNavItems = document.querySelectorAll('.mobile-nav-item');
-        mobileNavItems.forEach(item => {
-            item.addEventListener('click', () => {
-                const page = item.dataset.page;
-                if (page === 'more') {
-                    this.toggleMoreMenu();
-                } else {
-                    this.navigateTo(page);
-                    this.closeMoreMenu();
-                }
-            });
+        document.querySelectorAll('.mobile-nav-item').forEach(item => {
+            item.addEventListener('click', () => { this.navigateTo(item.dataset.page); });
         });
-
-        // Mobile more menu items
-        const moreItems = document.querySelectorAll('.mobile-more-item');
-        moreItems.forEach(item => {
-            item.addEventListener('click', () => {
-                const page = item.dataset.page;
-                this.navigateTo(page);
-                this.closeMoreMenu();
-            });
-        });
-
-        // Close more menu when clicking outside
-        document.getElementById('mobile-more-menu').addEventListener('click', (e) => {
-            if (e.target.id === 'mobile-more-menu') {
-                this.closeMoreMenu();
-            }
-        });
-    }
-
-    toggleSidebar() {
-        document.querySelector('.sidebar').classList.toggle('open');
-    }
-
-    closeSidebar() {
-        document.querySelector('.sidebar').classList.remove('open');
-    }
-
-    toggleMoreMenu() {
-        document.getElementById('mobile-more-menu').classList.toggle('active');
-        document.querySelector('.mobile-nav-item[data-page="more"]').classList.toggle('active');
-    }
-
-    closeMoreMenu() {
-        document.getElementById('mobile-more-menu').classList.remove('active');
-        document.querySelector('.mobile-nav-item[data-page="more"]').classList.remove('active');
     }
 
     navigateTo(page) {
-        // Update desktop nav
-        document.querySelectorAll('.nav-item').forEach(item => {
-            item.classList.toggle('active', item.dataset.page === page);
-        });
-
-        // Update mobile nav
-        document.querySelectorAll('.mobile-nav-item').forEach(item => {
-            if (item.dataset.page !== 'more') {
-                item.classList.toggle('active', item.dataset.page === page);
-            }
-        });
-
-        // Update pages
-        document.querySelectorAll('.page').forEach(p => {
-            p.classList.toggle('active', p.id === `${page}-page`);
-        });
-
-        // Render page-specific content
+        document.querySelectorAll('.nav-item').forEach(i => i.classList.toggle('active', i.dataset.page === page));
+        document.querySelectorAll('.mobile-nav-item').forEach(i => i.classList.toggle('active', i.dataset.page === page));
+        document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === `${page}-page`));
         this.renderPageContent(page);
     }
 
     renderPageContent(page) {
-        switch(page) {
-            case 'dashboard':
-                this.renderDashboard();
-                break;
-            case 'transactions':
-                this.renderTransactions();
-                break;
-            case 'budgets':
-                this.renderBudgets();
-                break;
-            case 'recurring':
-                this.renderRecurring();
-                break;
-            case 'networth':
-                this.renderNetWorth();
-                break;
-            case 'reports':
-                this.renderReports();
-                break;
-            case 'envelopes':
-                this.renderEnvelopes();
-                break;
-            case 'settings':
-                this.renderSettings();
-                break;
+        const renderers = {
+            dashboard: () => this.renderDashboard(),
+            transactions: () => { this.renderTransactions(); this.renderRecurring(); },
+            envelopes: () => this.renderEnvelopes(),
+            accounts: () => this.renderAccounts(),
+            reports: () => this.renderReports(),
+            settings: () => this.renderSettings()
+        };
+        if (renderers[page]) renderers[page]();
+    }
+
+    toggleSidebar() { document.querySelector('.sidebar').classList.toggle('open'); }
+    closeSidebar() { document.querySelector('.sidebar').classList.remove('open'); }
+
+    // ==========================================
+    // EVENT DELEGATION
+    // ==========================================
+
+    setupEventListeners() {
+        // Global click delegation
+        document.addEventListener('click', (e) => {
+            const actionEl = e.target.closest('[data-action]');
+            if (actionEl) { e.preventDefault(); this.handleAction(actionEl.dataset.action, actionEl); return; }
+
+            const tabBtn = e.target.closest('.tab-btn');
+            if (tabBtn) { this.switchTab(tabBtn); return; }
+
+            const themeChoice = e.target.closest('.theme-choice');
+            if (themeChoice) {
+                document.querySelectorAll('.theme-choice').forEach(b => b.classList.remove('active'));
+                themeChoice.classList.add('active');
+                this.applyTheme(themeChoice.dataset.theme);
+                return;
+            }
+        });
+
+        // Form submissions
+        const forms = {
+            'transaction-form': (e) => this.saveTransaction(e),
+            'recurring-form': (e) => this.saveRecurring(e),
+            'asset-form': (e) => this.saveAsset(e),
+            'account-action-form': (e) => this.saveAccountAction(e),
+            'envelope-form': (e) => this.saveEnvelope(e),
+            'paycheck-form': (e) => this.savePaycheck(e),
+            'income-source-form': (e) => this.saveIncomeSource(e),
+            'envelope-transfer-form': (e) => this.saveEnvelopeTransfer(e),
+            'auth-form': (e) => this.handleAuth(e)
+        };
+        for (const [id, handler] of Object.entries(forms)) {
+            const form = document.getElementById(id);
+            if (form) form.addEventListener('submit', handler);
         }
-    }
 
-    renderAll() {
-        this.renderDashboard();
-        this.populateCategorySelects();
-    }
+        // Radio/select change listeners
+        document.querySelectorAll('input[name="trans-type"]').forEach(r => {
+            r.addEventListener('change', () => { this.updateTransactionCategories(); this.updateTransactionAccountFields(); });
+        });
+        document.querySelectorAll('input[name="trans-contrib-type"]').forEach(r => {
+            r.addEventListener('change', () => this.updateTransactionAccountFields());
+        });
+        document.querySelectorAll('input[name="rec-type"]').forEach(r => {
+            r.addEventListener('change', () => this.updateRecurringCategories());
+        });
+        document.querySelectorAll('input[name="asset-type"]').forEach(r => {
+            r.addEventListener('change', () => this.toggleAccountFields());
+        });
 
-    updateDateDisplay() {
-        const dateEl = document.querySelector('.date-display');
-        if (dateEl) {
-            const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-            dateEl.textContent = new Date().toLocaleDateString(undefined, options);
-        }
-    }
+        const acSel = document.getElementById('asset-category-select');
+        if (acSel) acSel.addEventListener('change', () => this.toggleAccountFields());
 
-    setupFormListeners() {
-        // Transaction type toggle - update category options and account fields
-        document.querySelectorAll('input[name="trans-type"]').forEach(radio => {
-            radio.addEventListener('change', () => {
-                this.updateTransactionCategories();
-                this.updateTransactionAccountFields();
+        const transCat = document.getElementById('trans-category');
+        if (transCat) transCat.addEventListener('change', () => this.suggestEnvelopeForCategory('trans-category', 'trans-envelope'));
+
+        const quickCat = document.getElementById('quick-category');
+        if (quickCat) quickCat.addEventListener('change', () => this.suggestEnvelopeForCategory('quick-category', 'quick-envelope'));
+
+        const ps = document.getElementById('paycheck-source');
+        if (ps) ps.addEventListener('change', () => this.onPaycheckSourceChange());
+
+        const pa = document.getElementById('paycheck-amount');
+        if (pa) pa.addEventListener('input', () => this.updatePaycheckUnallocated());
+
+        const aa = document.getElementById('action-amount');
+        if (aa) aa.addEventListener('input', () => { this.calculatePaymentSplit(); this.updatePaymentUnallocated(); });
+
+        const actionEnvRows = document.getElementById('action-envelope-rows');
+        if (actionEnvRows) actionEnvRows.addEventListener('input', () => this.updatePaymentUnallocated());
+
+        const transToAcct = document.getElementById('trans-to-account');
+        if (transToAcct) transToAcct.addEventListener('change', () => this.updateTransPaymentEnvelopes());
+
+        const transAmount = document.getElementById('trans-amount');
+        if (transAmount) transAmount.addEventListener('input', () => this.updateTransAllocUnallocated());
+
+        const transAllocRows = document.getElementById('trans-envelope-alloc-rows');
+        if (transAllocRows) transAllocRows.addEventListener('input', () => this.updateTransAllocUnallocated());
+
+        document.querySelectorAll('input[name="contrib-type"]').forEach(r => {
+            r.addEventListener('change', () => {
+                const isPostTax = document.getElementById('contrib-posttax').checked;
+                document.getElementById('action-account-group').style.display = isPostTax ? 'block' : 'none';
             });
         });
 
-        document.querySelectorAll('input[name="rec-type"]').forEach(radio => {
-            radio.addEventListener('change', () => this.updateRecurringCategories());
+        // Filters
+        ['filter-type', 'filter-category', 'filter-date-from', 'filter-date-to', 'filter-search'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener(el.tagName === 'INPUT' && el.type === 'text' ? 'input' : 'change', () => this.filterTransactions());
         });
 
-        // Asset type toggle - show/hide debt fields
-        document.querySelectorAll('input[name="asset-type"]').forEach(radio => {
-            radio.addEventListener('change', () => this.toggleDebtFields());
+        // Settings
+        const ts = document.getElementById('theme-select');
+        if (ts) ts.addEventListener('change', () => this.setTheme(ts.value));
+
+        const cs = document.getElementById('currency-select');
+        if (cs) cs.addEventListener('change', () => this.setCurrency(cs.value));
+
+        const sn = document.getElementById('settings-name');
+        if (sn) sn.addEventListener('change', () => {
+            this.data.settings.userName = sn.value.trim();
+            this.saveData();
+            this.updateDateDisplay();
         });
 
-        // Contribution recurring toggle
-        document.getElementById('contribution-recurring').addEventListener('change', (e) => {
-            document.getElementById('contribution-recurring-fields').style.display =
-                e.target.checked ? 'block' : 'none';
-        });
+        const rp = document.getElementById('report-period');
+        if (rp) rp.addEventListener('change', () => this.renderReports());
+
+        const imp = document.getElementById('import-file');
+        if (imp) imp.addEventListener('change', (e) => this.importData(e));
+
+        // Paycheck allocation inputs (delegated)
+        const allocContainer = document.getElementById('paycheck-allocations');
+        if (allocContainer) allocContainer.addEventListener('input', () => this.updatePaycheckUnallocated());
+
+        // Sidebar overlay
+        const overlay = document.querySelector('.sidebar-overlay');
+        if (overlay) overlay.addEventListener('click', () => this.closeSidebar());
     }
 
-    updateTransactionAccountFields() {
-        const type = document.querySelector('input[name="trans-type"]:checked').value;
-        const fromGroup = document.getElementById('trans-from-account-group');
-        const toGroup = document.getElementById('trans-to-account-group');
-        const categoryGroup = document.getElementById('trans-category-group');
-        const fromLabel = fromGroup.querySelector('label');
-        const toLabel = toGroup.querySelector('label');
+    handleAction(action, target) {
+        const id = target.dataset.id;
+        switch (action) {
+            // Onboarding
+            case 'skip': this.onboardingSkip(); break;
+            case 'next': this.onboardingNext(); break;
+            case 'finish': this.onboardingFinish(); break;
+            case 'add-account': this.addOnboardAccount(); break;
+            case 'add-income': this.addOnboardIncome(); break;
+            case 'remove-onboard-account': this.removeOnboardAccount(parseInt(target.dataset.index)); break;
+            case 'remove-onboard-income': this.removeOnboardIncome(parseInt(target.dataset.index)); break;
 
-        // Update account dropdowns based on transaction type
-        this.populateAccountDropdowns(type);
+            // Navigation
+            case 'toggle-sidebar': this.toggleSidebar(); break;
+            case 'close-sidebar': this.closeSidebar(); break;
 
-        if (type === 'expense') {
-            // Expense: pay from bank account OR charge to credit card
-            fromGroup.style.display = 'block';
-            toGroup.style.display = 'none';
-            categoryGroup.style.display = 'block';
-            fromLabel.textContent = 'Pay From';
-            document.getElementById('trans-category').required = true;
-        } else if (type === 'income') {
-            // Income: deposit to bank/investment account only
-            fromGroup.style.display = 'none';
-            toGroup.style.display = 'block';
-            categoryGroup.style.display = 'block';
-            toLabel.textContent = 'Deposit To';
-            document.getElementById('trans-category').required = true;
-        } else if (type === 'transfer') {
-            // Transfer: move between your own asset accounts
-            fromGroup.style.display = 'block';
-            toGroup.style.display = 'block';
-            categoryGroup.style.display = 'none';
-            fromLabel.textContent = 'From Account';
-            toLabel.textContent = 'To Account';
-            document.getElementById('trans-category').required = false;
-        } else if (type === 'payment') {
-            // Payment: pay debt from bank account (both decrease)
-            fromGroup.style.display = 'block';
-            toGroup.style.display = 'block';
-            categoryGroup.style.display = 'none';
-            fromLabel.textContent = 'Pay From';
-            toLabel.textContent = 'Pay To (Debt)';
-            document.getElementById('trans-category').required = false;
+            // Auth
+            case 'sign-out': this.signOut(); break;
+            case 'open-auth': this.openModal('auth-modal'); break;
+            case 'toggle-auth': this.toggleAuthMode(); break;
+
+            // Quick actions
+            case 'quick-paycheck': this.openModal('paycheck-modal'); break;
+            case 'quick-transfer':
+                document.getElementById('trans-transfer').checked = true;
+                this.openModal('transaction-modal');
+                break;
+            case 'quick-payment':
+                document.getElementById('trans-payment').checked = true;
+                this.openModal('transaction-modal');
+                break;
+            case 'quick-transaction': this.openModal('transaction-modal'); break;
+            case 'quick-add-save': this.quickAddTransaction(); break;
+
+            // Modals
+            case 'open-transaction': this.openModal('transaction-modal'); break;
+            case 'open-recurring': this.openModal('recurring-modal'); break;
+            case 'open-asset': this.openModal('asset-modal'); break;
+            case 'open-envelope': this.openModal('envelope-modal'); break;
+            case 'open-paycheck': this.openModal('paycheck-modal'); break;
+            case 'open-income-source': this.openModal('income-source-modal'); break;
+            case 'open-envelope-transfer': this.openModal('envelope-transfer-modal'); break;
+            case 'close-modal': this.closeModal(target.dataset.modal || target.closest('[data-modal]')?.dataset.modal); break;
+
+            // CRUD actions
+            case 'edit-transaction': this.editTransaction(id); break;
+            case 'delete-transaction': this.confirmAction('Delete Transaction', 'Are you sure you want to delete this transaction?', () => this.deleteTransaction(id)); break;
+            case 'edit-recurring': this.editRecurring(id); break;
+            case 'delete-recurring': this.confirmAction('Delete Recurring', 'Delete this recurring transaction?', () => this.deleteRecurring(id)); break;
+            case 'edit-asset': this.editAsset(id); break;
+            case 'delete-asset': this.confirmAction('Delete Account', 'Are you sure you want to delete this account?', () => this.deleteAsset(id)); break;
+            case 'account-details': this.openAccountDetails(id); break;
+            case 'account-contribute': this.openAccountAction(id, 'contribute'); break;
+            case 'account-pay': this.openAccountAction(id, 'pay'); break;
+            case 'account-withdraw': this.openAccountAction(id, 'withdraw'); break;
+            case 'edit-envelope': this.editEnvelope(id); break;
+            case 'delete-envelope': this.confirmAction('Delete Envelope', 'Delete this envelope? Allocated funds data will be lost.', () => this.deleteEnvelope(id)); break;
+            case 'edit-income-source': this.editIncomeSource(id); break;
+            case 'delete-income-source': this.confirmAction('Delete Income Source', 'Delete this income source?', () => this.deleteIncomeSource(id)); break;
+            case 'delete-category': this.deleteCategory(id); break;
+
+            // Pagination
+            case 'prev-page': this.goToTransactionPage(this.transactionPage - 1); break;
+            case 'next-page': this.goToTransactionPage(this.transactionPage + 1); break;
+
+            // Settings
+            case 'add-category': this.addCategory(); break;
+            case 'rerun-onboarding': this.showOnboarding(); break;
+            case 'clear-data': this.confirmAction('Clear All Data', 'Are you sure you want to delete all your financial data? This cannot be undone.', () => this.clearAllData()); break;
+            case 'export-data': this.exportData(); break;
         }
     }
 
-    populateAccountDropdowns(transactionType) {
-        const fromSelect = document.getElementById('trans-from-account');
-        const toSelect = document.getElementById('trans-to-account');
-
-        const assets = this.data.assets.filter(a => a.type === 'asset');
-        const liabilities = this.data.assets.filter(a => a.type === 'liability');
-
-        // Build asset options
-        let assetsHtml = '';
-        if (assets.length > 0) {
-            assetsHtml = '<optgroup label="Bank & Investment Accounts">';
-            assets.forEach(a => {
-                const displayName = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
-                assetsHtml += `<option value="${this.escapeHtml(a.id)}">${displayName}</option>`;
-            });
-            assetsHtml += '</optgroup>';
-        }
-
-        // Build liability options
-        let liabilitiesHtml = '';
-        if (liabilities.length > 0) {
-            liabilitiesHtml = '<optgroup label="Credit Cards & Loans">';
-            liabilities.forEach(a => {
-                const displayName = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
-                liabilitiesHtml += `<option value="${this.escapeHtml(a.id)}">${displayName}</option>`;
-            });
-            liabilitiesHtml += '</optgroup>';
-        }
-
-        // Populate based on transaction type
-        if (transactionType === 'expense') {
-            // From: can pay with bank OR credit card
-            fromSelect.innerHTML = '<option value="">Cash</option>' + assetsHtml + liabilitiesHtml;
-        } else if (transactionType === 'income') {
-            // To: deposit only to asset accounts (not credit cards)
-            toSelect.innerHTML = '<option value="">External</option>' + assetsHtml;
-        } else if (transactionType === 'transfer') {
-            // Transfer: only between asset accounts
-            fromSelect.innerHTML = '<option value="">Select account</option>' + assetsHtml;
-            toSelect.innerHTML = '<option value="">Select account</option>' + assetsHtml;
-        } else if (transactionType === 'payment') {
-            // Payment: from asset TO liability
-            fromSelect.innerHTML = '<option value="">Select account</option>' + assetsHtml;
-            toSelect.innerHTML = '<option value="">Select debt to pay</option>' + liabilitiesHtml;
-        } else {
-            // Default
-            fromSelect.innerHTML = '<option value="">Cash / External</option>' + assetsHtml + liabilitiesHtml;
-            toSelect.innerHTML = '<option value="">External</option>' + assetsHtml + liabilitiesHtml;
-        }
+    switchTab(tabBtn) {
+        const tabBar = tabBtn.closest('.tab-bar');
+        const page = tabBtn.closest('.page');
+        if (!tabBar || !page) return;
+        const tabName = tabBtn.dataset.tab;
+        tabBar.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === tabBtn));
+        page.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.dataset.tab === tabName));
     }
 
     // ==========================================
-    // THEME MANAGEMENT
+    // MODAL MANAGEMENT
+    // ==========================================
+
+    openModal(modalId) {
+        const modal = document.getElementById(modalId);
+        if (!modal) return;
+        modal.classList.add('active');
+        this._previousFocus = document.activeElement;
+
+        if (modalId === 'transaction-modal') { this.updateTransactionCategories(); this.updateTransactionAccountFields(); this.populateTransactionEnvelopeDropdown(); }
+        else if (modalId === 'recurring-modal') this.updateRecurringCategories();
+        else if (modalId === 'envelope-modal') this.populateEnvelopeLinkDropdowns();
+        else if (modalId === 'paycheck-modal') this.populatePaycheckModal();
+        else if (modalId === 'income-source-modal') this.populateIncomeSourceAccountDropdown();
+        else if (modalId === 'envelope-transfer-modal') this.populateEnvelopeTransferDropdowns();
+
+        setTimeout(() => {
+            const focusable = modal.querySelectorAll('input:not([type="hidden"]):not([hidden]), select, textarea, button, [tabindex]:not([tabindex="-1"])');
+            if (focusable.length) focusable[0].focus();
+        }, 100);
+
+        this._modalKeyHandler = (e) => {
+            if (e.key === 'Escape') { this.closeModal(modalId); return; }
+            if (e.key === 'Tab') {
+                const focusable = Array.from(modal.querySelectorAll('input:not([type="hidden"]):not([hidden]), select, textarea, button, [tabindex]:not([tabindex="-1"])')).filter(el => el.offsetParent !== null);
+                if (!focusable.length) return;
+                const first = focusable[0], last = focusable[focusable.length - 1];
+                if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+            }
+        };
+        document.addEventListener('keydown', this._modalKeyHandler);
+    }
+
+    closeModal(modalId) {
+        if (!modalId) return;
+        const modal = document.getElementById(modalId);
+        if (modal) modal.classList.remove('active');
+        if (this._modalKeyHandler) { document.removeEventListener('keydown', this._modalKeyHandler); this._modalKeyHandler = null; }
+        if (this._previousFocus && typeof this._previousFocus.focus === 'function') { this._previousFocus.focus(); this._previousFocus = null; }
+
+        const form = modal?.querySelector('form');
+        if (form) form.reset();
+        ['transaction-id', 'recurring-id', 'asset-id', 'envelope-id', 'income-source-id'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        if (modalId === 'transaction-modal') {
+            document.getElementById('trans-expense').checked = true;
+            this.updateTransactionAccountFields();
+        }
+    }
+
+    confirmAction(title, message, callback) {
+        document.getElementById('confirm-title').textContent = title;
+        document.getElementById('confirm-message').textContent = message;
+        document.getElementById('confirm-action-btn').onclick = () => { this.closeModal('confirm-dialog'); callback(); };
+        this.openModal('confirm-dialog');
+    }
+
+    // ==========================================
+    // THEME
     // ==========================================
 
     setupTheme() {
-        const theme = this.data.settings.theme;
-        this.applyTheme(theme);
-        document.getElementById('theme-select').value = theme;
+        this.applyTheme(this.data.settings.theme);
+        document.getElementById('theme-select').value = this.data.settings.theme;
         document.getElementById('currency-select').value = this.data.settings.currency;
     }
 
@@ -549,170 +694,269 @@ class FinanceApp {
         this.renderAll();
     }
 
-    formatCurrency(amount) {
-        const currency = this.data.settings.currency;
-        const prefix = amount < 0 ? '-' : '';
-        return `${prefix}${currency}${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    // ==========================================
+    // ONBOARDING
+    // ==========================================
+
+    showOnboarding() {
+        this.onboardingStep = 1;
+        this.onboardAccounts = [];
+        this.onboardIncome = [];
+        document.getElementById('onboarding-overlay').style.display = 'flex';
+        this.updateOnboardingStep();
     }
 
-    // ==========================================
-    // MODAL MANAGEMENT
-    // ==========================================
+    updateOnboardingStep() {
+        document.querySelectorAll('.onboarding-step').forEach(s => s.classList.toggle('active', parseInt(s.dataset.step) === this.onboardingStep));
+        document.querySelectorAll('.onboarding-dot').forEach(d => {
+            const step = parseInt(d.dataset.step);
+            d.classList.toggle('active', step <= this.onboardingStep);
+        });
+    }
 
-    openModal(modalId) {
-        const modal = document.getElementById(modalId);
-        modal.classList.add('active');
-
-        // Save the element that had focus before modal opened
-        this._previousFocus = document.activeElement;
-
-        // Populate category selects when opening modals
-        if (modalId === 'transaction-modal') {
-            this.updateTransactionCategories();
-            this.updateTransactionAccountFields(); // This now calls populateAccountDropdowns internally
-        } else if (modalId === 'recurring-modal') {
-            this.updateRecurringCategories();
-        } else if (modalId === 'budget-modal') {
-            this.populateBudgetCategories();
-        } else if (modalId === 'envelope-modal') {
-            this.populateEnvelopeCategoryDropdown();
-        } else if (modalId === 'paycheck-modal') {
-            this.populatePaycheckModal();
-        } else if (modalId === 'income-source-modal') {
-            this.populateIncomeSourceAccountDropdown();
-        } else if (modalId === 'envelope-transfer-modal') {
-            this.populateEnvelopeTransferDropdowns();
+    onboardingNext() {
+        // Save current step data
+        if (this.onboardingStep === 1) {
+            const name = document.getElementById('onboard-name').value.trim();
+            const activeTheme = document.querySelector('.theme-choice.active');
+            if (name) this.data.settings.userName = name;
+            if (activeTheme) { this.data.settings.theme = activeTheme.dataset.theme; this.applyTheme(activeTheme.dataset.theme); }
+            this.saveData();
+        } else if (this.onboardingStep === 3) {
+            this.saveOnboardEnvelopes();
+        } else if (this.onboardingStep === 4) {
+            this.populateOnboardIncomeAccounts();
         }
 
-        // Focus the first focusable element inside the modal
-        setTimeout(() => {
-            const focusable = modal.querySelectorAll('input:not([type="hidden"]):not([hidden]), select, textarea, button, [tabindex]:not([tabindex="-1"])');
-            if (focusable.length > 0) {
-                focusable[0].focus();
-            }
-        }, 100);
+        if (this.onboardingStep === 4) {
+            this.renderOnboardSummary();
+        }
 
-        // Set up focus trap and Escape key handler
-        this._modalKeyHandler = (e) => {
-            if (e.key === 'Escape') {
-                this.closeModal(modalId);
-                return;
-            }
-            if (e.key === 'Tab') {
-                const focusable = modal.querySelectorAll('input:not([type="hidden"]):not([hidden]), select, textarea, button, [tabindex]:not([tabindex="-1"])');
-                const focusArray = Array.from(focusable).filter(el => el.offsetParent !== null);
-                if (focusArray.length === 0) return;
+        this.onboardingStep = Math.min(this.onboardingStep + 1, 5);
+        this.updateOnboardingStep();
+    }
 
-                const first = focusArray[0];
-                const last = focusArray[focusArray.length - 1];
+    onboardingSkip() {
+        this.data.settings.onboardingComplete = true;
+        this.saveData();
+        document.getElementById('onboarding-overlay').style.display = 'none';
+        this.renderAll();
+        this.updateDateDisplay();
+    }
 
-                if (e.shiftKey) {
-                    if (document.activeElement === first) {
-                        e.preventDefault();
-                        last.focus();
-                    }
-                } else {
-                    if (document.activeElement === last) {
-                        e.preventDefault();
-                        first.focus();
-                    }
-                }
-            }
+    onboardingFinish() {
+        this.data.settings.onboardingComplete = true;
+        this.saveData();
+        document.getElementById('onboarding-overlay').style.display = 'none';
+        this.renderAll();
+        this.updateDateDisplay();
+        this.showToast('Welcome to FinanceFlow!', 'success');
+    }
+
+    addOnboardAccount() {
+        const type = document.getElementById('onboard-account-type').value;
+        const name = document.getElementById('onboard-account-name').value.trim();
+        const balance = parseFloat(document.getElementById('onboard-account-balance').value) || 0;
+        if (!name) { this.showToast('Enter an account name', 'error'); return; }
+
+        const typeMap = {
+            'checking': { assetType: 'asset', category: 'checking' },
+            'savings': { assetType: 'asset', category: 'savings' },
+            'credit-card': { assetType: 'liability', category: 'credit-card' },
+            'student-loan': { assetType: 'liability', category: 'student-loan' },
+            'auto-loan': { assetType: 'liability', category: 'auto-loan' },
+            'mortgage': { assetType: 'liability', category: 'mortgage' },
+            'brokerage': { assetType: 'asset', category: 'brokerage' },
+            '401k': { assetType: 'asset', category: '401k' }
         };
-        document.addEventListener('keydown', this._modalKeyHandler);
+        const info = typeMap[type] || { assetType: 'asset', category: 'checking' };
+
+        const asset = {
+            id: this.generateId(), type: info.assetType, name, value: balance,
+            category: info.category, notes: '', contributions: [], payments: [], withdrawals: [],
+            updatedAt: new Date().toISOString()
+        };
+        this.data.assets.push(asset);
+        this.onboardAccounts.push(asset);
+        this.saveData();
+
+        document.getElementById('onboard-account-name').value = '';
+        document.getElementById('onboard-account-balance').value = '';
+        this.renderOnboardAccountsList();
     }
 
-    closeModal(modalId) {
-        document.getElementById(modalId).classList.remove('active');
-
-        // Remove focus trap handler
-        if (this._modalKeyHandler) {
-            document.removeEventListener('keydown', this._modalKeyHandler);
-            this._modalKeyHandler = null;
+    removeOnboardAccount(index) {
+        if (index >= 0 && index < this.onboardAccounts.length) {
+            const removed = this.onboardAccounts.splice(index, 1)[0];
+            this.data.assets = this.data.assets.filter(a => a.id !== removed.id);
+            this.saveData();
+            this.renderOnboardAccountsList();
         }
+    }
 
-        // Restore focus to the element that had focus before modal opened
-        if (this._previousFocus && typeof this._previousFocus.focus === 'function') {
-            this._previousFocus.focus();
-            this._previousFocus = null;
+    renderOnboardAccountsList() {
+        const container = document.getElementById('onboard-accounts-list');
+        container.innerHTML = this.onboardAccounts.map((a, i) => `
+            <div class="onboard-account-item">
+                <span>${this.escapeHtml(a.name)}</span>
+                <span>${this.formatCurrency(a.value)}</span>
+                <span class="text-muted">${this.formatAccountType(a.category)}</span>
+                <button class="btn-icon delete" data-action="remove-onboard-account" data-index="${i}"><i class="fas fa-times"></i></button>
+            </div>
+        `).join('');
+    }
+
+    saveOnboardEnvelopes() {
+        document.querySelectorAll('.onboard-envelope-item input[type="checkbox"]:checked').forEach(cb => {
+            const name = cb.dataset.name;
+            const targetInput = cb.closest('.onboard-envelope-item').querySelector('.onboard-env-target');
+            const target = parseFloat(targetInput?.value) || 0;
+            const color = cb.dataset.color || '#6366f1';
+            const categoryId = cb.dataset.category || null;
+
+            const exists = this.data.envelopes.some(e => e.name === name);
+            if (!exists) {
+                this.data.envelopes.push({
+                    id: this.generateId(), name, color, balance: 0,
+                    targetAmount: target, targetFrequency: 'monthly',
+                    linkedCategoryId: categoryId || null, linkedAccountId: null,
+                    spent: 0, lastResetDate: new Date().toISOString().split('T')[0],
+                    createdAt: new Date().toISOString()
+                });
+            }
+        });
+        this.saveData();
+    }
+
+    addOnboardIncome() {
+        const name = document.getElementById('onboard-income-name').value.trim();
+        const accountId = document.getElementById('onboard-income-account').value || null;
+        if (!name) { this.showToast('Enter an income source name', 'error'); return; }
+
+        const source = {
+            id: this.generateId(), name, defaultAccountId: accountId,
+            allocationTemplate: {}, createdAt: new Date().toISOString()
+        };
+        this.data.incomeSources.push(source);
+        this.onboardIncome.push(source);
+        this.saveData();
+
+        document.getElementById('onboard-income-name').value = '';
+        this.renderOnboardIncomeList();
+    }
+
+    removeOnboardIncome(index) {
+        if (index >= 0 && index < this.onboardIncome.length) {
+            const removed = this.onboardIncome.splice(index, 1)[0];
+            this.data.incomeSources = this.data.incomeSources.filter(s => s.id !== removed.id);
+            this.saveData();
+            this.renderOnboardIncomeList();
         }
+    }
 
-        // Reset forms
-        const form = document.querySelector(`#${modalId} form`);
-        if (form) form.reset();
+    renderOnboardIncomeList() {
+        const container = document.getElementById('onboard-income-list');
+        container.innerHTML = this.onboardIncome.map((s, i) => {
+            const acct = s.defaultAccountId ? this.data.assets.find(a => a.id === s.defaultAccountId) : null;
+            return `<div class="onboard-account-item">
+                <span>${this.escapeHtml(s.name)}</span>
+                <span class="text-muted">${acct ? this.escapeHtml(acct.name) : 'No default account'}</span>
+                <button class="btn-icon delete" data-action="remove-onboard-income" data-index="${i}"><i class="fas fa-times"></i></button>
+            </div>`;
+        }).join('');
+    }
 
-        // Reset hidden IDs
-        const transactionId = document.getElementById('transaction-id');
-        const budgetId = document.getElementById('budget-id');
-        const recurringId = document.getElementById('recurring-id');
-        const assetId = document.getElementById('asset-id');
+    populateOnboardIncomeAccounts() {
+        const select = document.getElementById('onboard-income-account');
+        select.innerHTML = '<option value="">Deposit account...</option>';
+        this.data.assets.filter(a => a.type === 'asset').forEach(a => {
+            select.innerHTML += `<option value="${this.escapeHtml(a.id)}">${this.escapeHtml(a.name)}</option>`;
+        });
+    }
 
-        const envelopeId = document.getElementById('envelope-id');
-        const incomeSourceId = document.getElementById('income-source-id');
-
-        if (transactionId) transactionId.value = '';
-        if (budgetId) budgetId.value = '';
-        if (recurringId) recurringId.value = '';
-        if (assetId) assetId.value = '';
-        if (envelopeId) envelopeId.value = '';
-        if (incomeSourceId) incomeSourceId.value = '';
-
-        // Reset transaction modal to defaults
-        if (modalId === 'transaction-modal') {
-            document.getElementById('trans-expense').checked = true;
-            this.updateTransactionAccountFields();
-        }
+    renderOnboardSummary() {
+        const el = document.getElementById('onboard-summary');
+        const accounts = this.onboardAccounts.length;
+        const envs = this.data.envelopes.length;
+        const inc = this.onboardIncome.length;
+        el.innerHTML = `
+            <div class="onboard-summary-item"><i class="fas fa-university"></i> <strong>${accounts}</strong> account${accounts !== 1 ? 's' : ''} added</div>
+            <div class="onboard-summary-item"><i class="fas fa-envelope-open-text"></i> <strong>${envs}</strong> envelope${envs !== 1 ? 's' : ''} created</div>
+            <div class="onboard-summary-item"><i class="fas fa-briefcase"></i> <strong>${inc}</strong> income source${inc !== 1 ? 's' : ''} added</div>
+        `;
     }
 
     // ==========================================
-    // CATEGORY MANAGEMENT
+    // CATEGORIES
     // ==========================================
 
     populateCategorySelects() {
-        // Filter category select
         const filterCat = document.getElementById('filter-category');
-        filterCat.innerHTML = '<option value="all">All Categories</option>';
-        this.data.categories.forEach(cat => {
-            filterCat.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
+        if (filterCat) {
+            filterCat.innerHTML = '<option value="all">All Categories</option>';
+            this.data.categories.forEach(cat => {
+                filterCat.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
+            });
+        }
+        this.populateQuickAddCategories();
+    }
+
+    populateQuickAddCategories() {
+        const sel = document.getElementById('quick-category');
+        if (!sel) return;
+        sel.innerHTML = '';
+        this.data.categories.filter(c => c.type === 'expense').forEach(cat => {
+            sel.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
+        });
+        this.populateQuickAddEnvelopes();
+    }
+
+    suggestEnvelopeForCategory(categorySelectId, envelopeSelectId) {
+        const catSel = document.getElementById(categorySelectId);
+        const envSel = document.getElementById(envelopeSelectId);
+        if (!catSel || !envSel) return;
+        const categoryId = catSel.value;
+        const matches = this.data.envelopes.filter(e => e.linkedCategoryId === categoryId);
+        if (matches.length === 1) envSel.value = matches[0].id;
+    }
+
+    populateTransactionEnvelopeDropdown() {
+        const sel = document.getElementById('trans-envelope');
+        if (!sel) return;
+        sel.innerHTML = '<option value="">None</option>';
+        this.data.envelopes.forEach(env => {
+            sel.innerHTML += `<option value="${this.escapeHtml(env.id)}">${this.escapeHtml(env.name)}</option>`;
+        });
+    }
+
+    populateQuickAddEnvelopes() {
+        const sel = document.getElementById('quick-envelope');
+        if (!sel) return;
+        sel.innerHTML = '<option value="">No envelope</option>';
+        this.data.envelopes.forEach(env => {
+            sel.innerHTML += `<option value="${this.escapeHtml(env.id)}">${this.escapeHtml(env.name)}</option>`;
         });
     }
 
     updateTransactionCategories() {
-        const type = document.querySelector('input[name="trans-type"]:checked').value;
+        const type = document.querySelector('input[name="trans-type"]:checked')?.value || 'expense';
         const select = document.getElementById('trans-category');
+        if (!select) return;
         select.innerHTML = '';
-
-        this.data.categories
-            .filter(c => c.type === type)
-            .forEach(cat => {
-                select.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
-            });
+        const filterType = (type === 'transfer' || type === 'payment') ? 'expense' : type;
+        this.data.categories.filter(c => c.type === filterType).forEach(cat => {
+            select.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
+        });
     }
 
     updateRecurringCategories() {
-        const type = document.querySelector('input[name="rec-type"]:checked').value;
+        const type = document.querySelector('input[name="rec-type"]:checked')?.value || 'expense';
         const select = document.getElementById('rec-category');
+        if (!select) return;
         select.innerHTML = '';
-
-        this.data.categories
-            .filter(c => c.type === type)
-            .forEach(cat => {
-                select.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
-            });
-    }
-
-    populateBudgetCategories() {
-        const select = document.getElementById('budget-category');
-        select.innerHTML = '';
-
-        // Only show expense categories that don't have a budget yet
-        const existingBudgetCategories = this.data.budgets.map(b => b.categoryId);
-
-        this.data.categories
-            .filter(c => c.type === 'expense' && !existingBudgetCategories.includes(c.id))
-            .forEach(cat => {
-                select.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
-            });
+        this.data.categories.filter(c => c.type === type).forEach(cat => {
+            select.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
+        });
     }
 
     getCategoryById(id) {
@@ -723,36 +967,25 @@ class FinanceApp {
         const name = document.getElementById('new-category-name').value.trim();
         const color = document.getElementById('new-category-color').value;
         const type = document.getElementById('new-category-type').value;
-
-        if (!name) {
-            this.showToast('Please enter a category name', 'error');
-            return;
-        }
-
+        if (!name) { this.showToast('Please enter a category name', 'error'); return; }
         const id = name.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now();
         this.data.categories.push({ id, name, color, type });
         this.saveData();
-
         document.getElementById('new-category-name').value = '';
         this.renderSettings();
-        this.showToast('Category added successfully', 'success');
+        this.populateCategorySelects();
+        this.showToast('Category added', 'success');
     }
 
     deleteCategory(id) {
-        // Check if category is in use
         const inUse = this.data.transactions.some(t => t.categoryId === id) ||
-                      this.data.budgets.some(b => b.categoryId === id) ||
                       this.data.recurring.some(r => r.categoryId === id) ||
-                      (this.data.envelopes || []).some(e => e.linkedCategoryId === id);
-
-        if (inUse) {
-            this.showToast('Cannot delete category that is in use', 'error');
-            return;
-        }
-
+                      this.data.envelopes.some(e => e.linkedCategoryId === id);
+        if (inUse) { this.showToast('Cannot delete category that is in use', 'error'); return; }
         this.data.categories = this.data.categories.filter(c => c.id !== id);
         this.saveData();
         this.renderSettings();
+        this.populateCategorySelects();
         this.showToast('Category deleted', 'success');
     }
 
@@ -762,56 +995,49 @@ class FinanceApp {
 
     saveTransaction(event) {
         event.preventDefault();
-
-        const id = document.getElementById('transaction-id').value || Date.now().toString();
+        const id = document.getElementById('transaction-id').value || this.generateId();
         const type = document.querySelector('input[name="trans-type"]:checked').value;
         const amount = parseFloat(document.getElementById('trans-amount').value);
         const description = document.getElementById('trans-description').value.trim();
-        const categoryId = type === 'transfer' ? null : document.getElementById('trans-category').value;
+        const categoryId = (type === 'transfer' || type === 'payment' || type === 'contribution') ? null : document.getElementById('trans-category').value;
         const date = document.getElementById('trans-date').value;
         const notes = document.getElementById('trans-notes').value;
-        const fromAccountId = document.getElementById('trans-from-account').value || null;
+        const isPreTax = type === 'contribution' && document.getElementById('trans-contrib-pretax')?.checked;
+        const fromAccountId = isPreTax ? null : (document.getElementById('trans-from-account').value || null);
         const toAccountId = document.getElementById('trans-to-account').value || null;
+        const envelopeId = document.getElementById('trans-envelope').value || null;
+        const contribType = type === 'contribution' ? (isPreTax ? 'pretax' : 'posttax') : null;
 
-        // Validation
-        if (!amount || amount <= 0) {
-            this.showToast('Amount must be greater than 0', 'error');
-            return;
-        }
-        if (!description) {
-            this.showToast('Description cannot be empty', 'error');
-            return;
-        }
-        if (!date) {
-            this.showToast('Date is required', 'error');
-            return;
-        }
+        if (!amount || amount <= 0) { this.showToast('Amount must be greater than 0', 'error'); return; }
+        if (!description) { this.showToast('Description cannot be empty', 'error'); return; }
+        if (!date) { this.showToast('Date is required', 'error'); return; }
 
-        const transaction = {
-            id,
-            type,
-            amount,
-            description,
-            categoryId,
-            date,
-            notes,
-            fromAccountId,
-            toAccountId,
-            createdAt: new Date().toISOString()
-        };
-
+        const transaction = { id, type, amount, description, categoryId, date, notes, fromAccountId, toAccountId, envelopeId, contribType, createdAt: new Date().toISOString() };
         const existingIndex = this.data.transactions.findIndex(t => t.id === id);
 
-        // If editing, first reverse the old transaction's effect on accounts
         if (existingIndex > -1) {
-            const oldTransaction = this.data.transactions[existingIndex];
-            this.reverseTransactionAccountEffect(oldTransaction);
-            this.reverseEnvelopeEffect(oldTransaction);
+            const old = this.data.transactions[existingIndex];
+            this.reverseTransactionAccountEffect(old);
+            this.reverseEnvelopeEffect(old);
         }
 
-        // Apply the new transaction's effect on accounts
         this.applyTransactionAccountEffect(transaction);
         this.applyEnvelopeEffect(transaction);
+
+        // Deduct from envelopes for CC payment allocations
+        if (type === 'payment' && toAccountId) {
+            const targetAsset = this.data.assets.find(a => a.id === toAccountId);
+            if (targetAsset && targetAsset.category === 'credit-card') {
+                this.data.envelopes.forEach(env => {
+                    const input = document.getElementById(`trans-alloc-${env.id}`);
+                    const alloc = input ? (parseFloat(input.value) || 0) : 0;
+                    if (alloc > 0) {
+                        env.balance -= alloc;
+                        env.spent += alloc;
+                    }
+                });
+            }
+        }
 
         if (existingIndex > -1) {
             this.data.transactions[existingIndex] = transaction;
@@ -826,104 +1052,136 @@ class FinanceApp {
         this.closeModal('transaction-modal');
         this.renderTransactions();
         this.renderDashboard();
-        this.renderNetWorth();
+        this.renderAccounts();
     }
+
+    editTransaction(id) {
+        const t = this.data.transactions.find(t => t.id === id);
+        if (!t) return;
+        document.getElementById('transaction-id').value = t.id;
+        document.getElementById('transaction-modal-title').textContent = 'Edit Transaction';
+        const typeRadio = document.getElementById(`trans-${t.type}`);
+        if (typeRadio) typeRadio.checked = true;
+        else document.getElementById('trans-expense').checked = true;
+        this.updateTransactionCategories();
+        this.updateTransactionAccountFields();
+        document.getElementById('trans-amount').value = t.amount;
+        document.getElementById('trans-description').value = t.description;
+        if (t.categoryId) document.getElementById('trans-category').value = t.categoryId;
+        document.getElementById('trans-date').value = t.date;
+        document.getElementById('trans-notes').value = t.notes || '';
+        setTimeout(() => {
+            if (t.fromAccountId) document.getElementById('trans-from-account').value = t.fromAccountId;
+            if (t.toAccountId) document.getElementById('trans-to-account').value = t.toAccountId;
+            if (t.envelopeId) document.getElementById('trans-envelope').value = t.envelopeId;
+            if (t.contribType === 'pretax') document.getElementById('trans-contrib-pretax').checked = true;
+            else if (t.contribType === 'posttax') document.getElementById('trans-contrib-posttax').checked = true;
+            if (t.type === 'payment') this.updateTransPaymentEnvelopes();
+        }, 0);
+        this.openModal('transaction-modal');
+    }
+
+    deleteTransaction(id) {
+        const t = this.data.transactions.find(t => t.id === id);
+        if (t) { this.reverseTransactionAccountEffect(t); this.reverseEnvelopeEffect(t); }
+        this.data.transactions = this.data.transactions.filter(t => t.id !== id);
+        this.recordNetworthSnapshot();
+        this.saveData();
+        this.renderTransactions();
+        this.renderDashboard();
+        this.renderAccounts();
+        this.showToast('Transaction deleted', 'success');
+    }
+
+    quickAddTransaction() {
+        const amount = parseFloat(document.getElementById('quick-amount').value);
+        const description = document.getElementById('quick-description').value.trim();
+        const categoryId = document.getElementById('quick-category').value;
+        const envelopeId = document.getElementById('quick-envelope').value || null;
+        if (!amount || amount <= 0) { this.showToast('Enter an amount', 'error'); return; }
+        if (!description) { this.showToast('Enter a description', 'error'); return; }
+        const transaction = {
+            id: this.generateId(), type: 'expense', amount, description, categoryId,
+            date: new Date().toISOString().split('T')[0], notes: '', fromAccountId: null, toAccountId: null,
+            envelopeId, createdAt: new Date().toISOString()
+        };
+        this.applyEnvelopeEffect(transaction);
+        this.data.transactions.push(transaction);
+        this.saveData();
+        document.getElementById('quick-amount').value = '';
+        document.getElementById('quick-description').value = '';
+        this.renderTransactions();
+        this.renderDashboard();
+        this.showToast('Expense added', 'success');
+    }
+
+    filterTransactions() { this.transactionPage = 1; this.renderTransactions(); }
+
+    getFilteredTransactions() {
+        let txns = [...this.data.transactions];
+        const type = document.getElementById('filter-type')?.value;
+        const category = document.getElementById('filter-category')?.value;
+        const dateFrom = document.getElementById('filter-date-from')?.value;
+        const dateTo = document.getElementById('filter-date-to')?.value;
+        const search = document.getElementById('filter-search')?.value?.toLowerCase();
+        if (type && type !== 'all') txns = txns.filter(t => t.type === type);
+        if (category && category !== 'all') txns = txns.filter(t => t.categoryId === category);
+        if (dateFrom) txns = txns.filter(t => t.date >= dateFrom);
+        if (dateTo) txns = txns.filter(t => t.date <= dateTo);
+        if (search) txns = txns.filter(t => t.description.toLowerCase().includes(search) || this.getCategoryById(t.categoryId).name.toLowerCase().includes(search));
+        return txns.sort((a, b) => new Date(b.date) - new Date(a.date));
+    }
+
+    goToTransactionPage(page) {
+        this.transactionPage = page;
+        this.renderTransactions();
+        document.getElementById('transactions-table')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    // ==========================================
+    // TRANSACTION ACCOUNT EFFECTS
+    // ==========================================
 
     applyTransactionAccountEffect(transaction) {
         const { type, amount, fromAccountId, toAccountId } = transaction;
-
-        /*
-         * ACCOUNTING LOGIC:
-         *
-         * EXPENSE: Spending money
-         *   - From bank account → bank balance DECREASES
-         *   - From credit card → credit card balance INCREASES (charging to card = more debt)
-         *
-         * INCOME: Receiving money
-         *   - To bank account → bank balance INCREASES
-         *   - (Credit cards shouldn't receive income - that's a payment)
-         *
-         * TRANSFER: Moving money between your own asset accounts
-         *   - From account DECREASES
-         *   - To account INCREASES
-         *   - Only between asset accounts (checking ↔ savings ↔ brokerage)
-         *
-         * PAYMENT: Paying off debt
-         *   - From bank account → bank balance DECREASES
-         *   - To debt account → debt balance DECREASES
-         *   - BOTH accounts go down (you lose money, but you owe less)
-         */
-
         if (type === 'expense' && fromAccountId) {
             const account = this.data.assets.find(a => a.id === fromAccountId);
             if (account) {
-                if (account.type === 'asset') {
-                    // Paying from bank/debit - balance goes down
-                    account.value -= amount;
-                } else {
-                    // Charging to credit card - debt goes UP
-                    account.value += amount;
-                }
+                account.value += (account.type === 'asset') ? -amount : amount;
                 account.updatedAt = new Date().toISOString();
             }
         } else if (type === 'income' && toAccountId) {
             const account = this.data.assets.find(a => a.id === toAccountId);
-            if (account && account.type === 'asset') {
-                // Deposit to bank - balance goes up
-                account.value += amount;
-                account.updatedAt = new Date().toISOString();
-            }
+            if (account && account.type === 'asset') { account.value += amount; account.updatedAt = new Date().toISOString(); }
         } else if (type === 'transfer') {
-            // Transfer between asset accounts - one down, one up
-            if (fromAccountId) {
-                const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
-                if (fromAccount && fromAccount.type === 'asset') {
-                    fromAccount.value -= amount;
-                    fromAccount.updatedAt = new Date().toISOString();
-                }
-            }
-            if (toAccountId) {
-                const toAccount = this.data.assets.find(a => a.id === toAccountId);
-                if (toAccount && toAccount.type === 'asset') {
-                    toAccount.value += amount;
-                    toAccount.updatedAt = new Date().toISOString();
-                }
-            }
+            if (fromAccountId) { const a = this.data.assets.find(a => a.id === fromAccountId); if (a && a.type === 'asset') { a.value -= amount; a.updatedAt = new Date().toISOString(); } }
+            if (toAccountId) { const a = this.data.assets.find(a => a.id === toAccountId); if (a && a.type === 'asset') { a.value += amount; a.updatedAt = new Date().toISOString(); } }
         } else if (type === 'payment') {
-            // Debt payment - BOTH accounts decrease
-            if (fromAccountId) {
-                const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
-                if (fromAccount && fromAccount.type === 'asset') {
-                    // Bank account decreases (money leaves)
-                    fromAccount.value -= amount;
-                    fromAccount.updatedAt = new Date().toISOString();
+            if (fromAccountId) { const a = this.data.assets.find(a => a.id === fromAccountId); if (a && a.type === 'asset') { a.value -= amount; a.updatedAt = new Date().toISOString(); } }
+            if (toAccountId) {
+                const a = this.data.assets.find(a => a.id === toAccountId);
+                if (a && a.type === 'liability') {
+                    const isCreditCard = a.category === 'credit-card';
+                    let principal, interest;
+                    if (isCreditCard) { principal = amount; interest = 0; }
+                    else { const monthlyRate = (a.interestRate || 0) / 100 / 12; const oldBalance = a.value; interest = oldBalance * monthlyRate; principal = Math.max(0, amount - interest); }
+                    a.value = Math.max(0, a.value - principal);
+                    a.updatedAt = new Date().toISOString();
+                    if (!a.payments) a.payments = [];
+                    a.payments.push({ id: transaction.id + '-payment', amount, principal, interest, date: transaction.date, balanceAfter: a.value, createdAt: new Date().toISOString() });
                 }
             }
+        } else if (type === 'contribution') {
+            // Post-tax: deduct from source account
+            if (fromAccountId) { const a = this.data.assets.find(a => a.id === fromAccountId); if (a && a.type === 'asset') { a.value -= amount; a.updatedAt = new Date().toISOString(); } }
+            // Add to target retirement account
             if (toAccountId) {
-                const toAccount = this.data.assets.find(a => a.id === toAccountId);
-                if (toAccount && toAccount.type === 'liability') {
-                    // Debt decreases (you owe less)
-                    toAccount.value -= amount;
-                    toAccount.value = Math.max(0, toAccount.value); // Can't go negative
-                    toAccount.updatedAt = new Date().toISOString();
-
-                    // Record as a payment in the debt's payment history
-                    if (!toAccount.payments) toAccount.payments = [];
-                    // Calculate interest portion if we have rate info
-                    const monthlyRate = (toAccount.interestRate || 0) / 100 / 12;
-                    const oldBalance = toAccount.value + amount; // Balance before payment
-                    const interestPortion = oldBalance * monthlyRate;
-                    const principalPortion = Math.max(0, amount - interestPortion);
-
-                    toAccount.payments.push({
-                        id: transaction.id + '-payment',
-                        amount: amount,
-                        principal: principalPortion,
-                        interest: interestPortion,
-                        date: transaction.date,
-                        balanceAfter: toAccount.value,
-                        createdAt: new Date().toISOString()
-                    });
+                const a = this.data.assets.find(a => a.id === toAccountId);
+                if (a && a.type === 'asset') {
+                    a.value += amount; a.updatedAt = new Date().toISOString();
+                    if (!a.contributions) a.contributions = [];
+                    a.contributions.push({ id: transaction.id + '-contrib', amount, date: transaction.date, type: transaction.contribType || 'posttax', createdAt: new Date().toISOString() });
+                    if (a.ytdContribution !== undefined) a.ytdContribution += amount;
                 }
             }
         }
@@ -931,503 +1189,152 @@ class FinanceApp {
 
     reverseTransactionAccountEffect(transaction) {
         const { type, amount, fromAccountId, toAccountId } = transaction;
-
-        // Reverse the effects applied above
-
         if (type === 'expense' && fromAccountId) {
-            const account = this.data.assets.find(a => a.id === fromAccountId);
-            if (account) {
-                if (account.type === 'asset') {
-                    account.value += amount; // Restore bank balance
-                } else {
-                    account.value -= amount; // Remove charge from credit card
-                    account.value = Math.max(0, account.value);
-                }
-                account.updatedAt = new Date().toISOString();
-            }
+            const a = this.data.assets.find(a => a.id === fromAccountId);
+            if (a) { a.value += (a.type === 'asset') ? amount : -amount; if (a.type !== 'asset') a.value = Math.max(0, a.value); a.updatedAt = new Date().toISOString(); }
         } else if (type === 'income' && toAccountId) {
-            const account = this.data.assets.find(a => a.id === toAccountId);
-            if (account && account.type === 'asset') {
-                account.value -= amount; // Remove deposit
-                account.updatedAt = new Date().toISOString();
-            }
+            const a = this.data.assets.find(a => a.id === toAccountId);
+            if (a && a.type === 'asset') { a.value -= amount; a.updatedAt = new Date().toISOString(); }
         } else if (type === 'transfer') {
-            if (fromAccountId) {
-                const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
-                if (fromAccount && fromAccount.type === 'asset') {
-                    fromAccount.value += amount; // Restore source
-                    fromAccount.updatedAt = new Date().toISOString();
-                }
-            }
-            if (toAccountId) {
-                const toAccount = this.data.assets.find(a => a.id === toAccountId);
-                if (toAccount && toAccount.type === 'asset') {
-                    toAccount.value -= amount; // Remove from destination
-                    toAccount.updatedAt = new Date().toISOString();
-                }
-            }
+            if (fromAccountId) { const a = this.data.assets.find(a => a.id === fromAccountId); if (a && a.type === 'asset') { a.value += amount; a.updatedAt = new Date().toISOString(); } }
+            if (toAccountId) { const a = this.data.assets.find(a => a.id === toAccountId); if (a && a.type === 'asset') { a.value -= amount; a.updatedAt = new Date().toISOString(); } }
         } else if (type === 'payment') {
-            // Reverse debt payment - BOTH accounts go back up
-            if (fromAccountId) {
-                const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
-                if (fromAccount && fromAccount.type === 'asset') {
-                    fromAccount.value += amount; // Restore bank balance
-                    fromAccount.updatedAt = new Date().toISOString();
-                }
-            }
+            if (fromAccountId) { const a = this.data.assets.find(a => a.id === fromAccountId); if (a && a.type === 'asset') { a.value += amount; a.updatedAt = new Date().toISOString(); } }
+            if (toAccountId) { const a = this.data.assets.find(a => a.id === toAccountId); if (a && a.type === 'liability') { a.value += amount; a.updatedAt = new Date().toISOString(); if (a.payments) a.payments = a.payments.filter(p => p.id !== transaction.id + '-payment'); } }
+        } else if (type === 'contribution') {
+            if (fromAccountId) { const a = this.data.assets.find(a => a.id === fromAccountId); if (a && a.type === 'asset') { a.value += amount; a.updatedAt = new Date().toISOString(); } }
             if (toAccountId) {
-                const toAccount = this.data.assets.find(a => a.id === toAccountId);
-                if (toAccount && toAccount.type === 'liability') {
-                    toAccount.value += amount; // Debt goes back up
-                    toAccount.updatedAt = new Date().toISOString();
-
-                    // Remove the payment record
-                    if (toAccount.payments) {
-                        toAccount.payments = toAccount.payments.filter(p => p.id !== transaction.id + '-payment');
-                    }
+                const a = this.data.assets.find(a => a.id === toAccountId);
+                if (a && a.type === 'asset') {
+                    a.value -= amount; a.updatedAt = new Date().toISOString();
+                    if (a.contributions) a.contributions = a.contributions.filter(c => c.id !== transaction.id + '-contrib');
+                    if (a.ytdContribution !== undefined) a.ytdContribution = Math.max(0, a.ytdContribution - amount);
                 }
             }
         }
     }
 
-    editTransaction(id) {
-        const trans = this.data.transactions.find(t => t.id === id);
-        if (!trans) return;
-
-        document.getElementById('transaction-id').value = trans.id;
-        document.getElementById('transaction-modal-title').textContent = 'Edit Transaction';
-
-        // Set type first to populate correct categories and account fields
-        const typeRadio = document.getElementById(`trans-${trans.type}`);
-        if (typeRadio) {
-            typeRadio.checked = true;
-        } else {
-            // Fallback for old transactions without proper type
-            document.getElementById('trans-expense').checked = true;
+    updateTransactionAccountFields() {
+        const type = document.querySelector('input[name="trans-type"]:checked')?.value || 'expense';
+        const fromGroup = document.getElementById('trans-from-account-group');
+        const toGroup = document.getElementById('trans-to-account-group');
+        const categoryGroup = document.getElementById('trans-category-group');
+        const envelopeGroup = document.getElementById('trans-envelope-group');
+        const envelopeAllocEl = document.getElementById('trans-envelope-alloc');
+        const contribTypeGroup = document.getElementById('trans-contrib-type-group');
+        const fromLabel = fromGroup?.querySelector('label');
+        const toLabel = toGroup?.querySelector('label');
+        if (!fromGroup) return;
+        this.populateAccountDropdowns(type);
+        if (contribTypeGroup) contribTypeGroup.style.display = 'none';
+        if (envelopeAllocEl) envelopeAllocEl.style.display = 'none';
+        if (type === 'expense') {
+            fromGroup.style.display = 'block'; toGroup.style.display = 'none'; categoryGroup.style.display = 'block';
+            if (envelopeGroup) envelopeGroup.style.display = 'block';
+            fromLabel.textContent = 'Pay From'; document.getElementById('trans-category').required = true;
+        } else if (type === 'income') {
+            fromGroup.style.display = 'none'; toGroup.style.display = 'block'; categoryGroup.style.display = 'block';
+            if (envelopeGroup) envelopeGroup.style.display = 'none';
+            toLabel.textContent = 'Deposit To'; document.getElementById('trans-category').required = true;
+        } else if (type === 'transfer') {
+            fromGroup.style.display = 'block'; toGroup.style.display = 'block'; categoryGroup.style.display = 'none';
+            if (envelopeGroup) envelopeGroup.style.display = 'block';
+            fromLabel.textContent = 'From Account'; toLabel.textContent = 'To Account'; document.getElementById('trans-category').required = false;
+        } else if (type === 'payment') {
+            fromGroup.style.display = 'block'; toGroup.style.display = 'block'; categoryGroup.style.display = 'none';
+            if (envelopeGroup) envelopeGroup.style.display = 'none';
+            fromLabel.textContent = 'Pay From'; toLabel.textContent = 'Pay To (Debt)'; document.getElementById('trans-category').required = false;
+            this.updateTransPaymentEnvelopes();
+        } else if (type === 'contribution') {
+            const isPreTax = document.getElementById('trans-contrib-pretax')?.checked;
+            fromGroup.style.display = isPreTax ? 'none' : 'block'; toGroup.style.display = 'block'; categoryGroup.style.display = 'none';
+            if (envelopeGroup) envelopeGroup.style.display = 'none';
+            if (contribTypeGroup) contribTypeGroup.style.display = 'block';
+            fromLabel.textContent = 'Transfer From'; toLabel.textContent = 'To Account'; document.getElementById('trans-category').required = false;
         }
+    }
 
-        this.updateTransactionCategories();
-        this.updateTransactionAccountFields();
-
-        document.getElementById('trans-amount').value = trans.amount;
-        document.getElementById('trans-description').value = trans.description;
-        if (trans.categoryId) {
-            document.getElementById('trans-category').value = trans.categoryId;
+    populateAccountDropdowns(transactionType) {
+        const fromSelect = document.getElementById('trans-from-account');
+        const toSelect = document.getElementById('trans-to-account');
+        if (!fromSelect) return;
+        const assets = this.data.assets.filter(a => a.type === 'asset');
+        const liabilities = this.data.assets.filter(a => a.type === 'liability');
+        let assetsHtml = '', liabilitiesHtml = '';
+        if (assets.length) {
+            assetsHtml = '<optgroup label="Bank & Investment Accounts">';
+            assets.forEach(a => { const dn = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name); assetsHtml += `<option value="${this.escapeHtml(a.id)}">${dn}</option>`; });
+            assetsHtml += '</optgroup>';
         }
-        document.getElementById('trans-date').value = trans.date;
-        document.getElementById('trans-notes').value = trans.notes || '';
-
-        // Set account selections after dropdowns are populated
-        setTimeout(() => {
-            if (trans.fromAccountId) {
-                document.getElementById('trans-from-account').value = trans.fromAccountId;
+        if (liabilities.length) {
+            liabilitiesHtml = '<optgroup label="Credit Cards & Loans">';
+            liabilities.forEach(a => { const dn = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name); liabilitiesHtml += `<option value="${this.escapeHtml(a.id)}">${dn}</option>`; });
+            liabilitiesHtml += '</optgroup>';
+        }
+        if (transactionType === 'expense') { fromSelect.innerHTML = '<option value="">Cash</option>' + assetsHtml + liabilitiesHtml; }
+        else if (transactionType === 'income') { toSelect.innerHTML = '<option value="">External</option>' + assetsHtml; }
+        else if (transactionType === 'transfer') { fromSelect.innerHTML = '<option value="">Select account</option>' + assetsHtml; toSelect.innerHTML = '<option value="">Select account</option>' + assetsHtml; }
+        else if (transactionType === 'payment') { fromSelect.innerHTML = '<option value="">Select account</option>' + assetsHtml; toSelect.innerHTML = '<option value="">Select debt</option>' + liabilitiesHtml; }
+        else if (transactionType === 'contribution') {
+            const retTypes = ['401k', '403b', 'ira', 'roth-ira', 'pension', 'hsa', '529'];
+            const retirementAccounts = this.data.assets.filter(a => a.type === 'asset' && retTypes.includes(a.category));
+            let retHtml = '';
+            if (retirementAccounts.length) {
+                retHtml = '<optgroup label="Retirement & Tax-Advantaged">';
+                retirementAccounts.forEach(a => { const dn = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name); retHtml += `<option value="${this.escapeHtml(a.id)}">${dn}</option>`; });
+                retHtml += '</optgroup>';
             }
-            if (trans.toAccountId) {
-                document.getElementById('trans-to-account').value = trans.toAccountId;
-            }
-        }, 0);
-
-        this.openModal('transaction-modal');
-    }
-
-    confirmAction(title, message, callback) {
-        document.getElementById('confirm-title').textContent = title;
-        document.getElementById('confirm-message').textContent = message;
-        document.getElementById('confirm-action-btn').onclick = () => {
-            this.closeModal('confirm-dialog');
-            callback();
-        };
-        this.openModal('confirm-dialog');
-    }
-
-    deleteTransaction(id) {
-        const transaction = this.data.transactions.find(t => t.id === id);
-        if (transaction) {
-            // Reverse the account effect before deleting
-            this.reverseTransactionAccountEffect(transaction);
-            this.reverseEnvelopeEffect(transaction);
+            fromSelect.innerHTML = '<option value="">Select account</option>' + assetsHtml;
+            toSelect.innerHTML = '<option value="">Select account</option>' + retHtml;
         }
-
-        this.data.transactions = this.data.transactions.filter(t => t.id !== id);
-        this.recordNetworthSnapshot();
-        this.saveData();
-        this.renderTransactions();
-        this.renderDashboard();
-        this.renderNetWorth();
-        this.showToast('Transaction deleted', 'success');
-    }
-
-    filterTransactions() {
-        this.transactionPage = 1;
-        this.renderTransactions();
-    }
-
-    getFilteredTransactions() {
-        let transactions = [...this.data.transactions];
-
-        const type = document.getElementById('filter-type').value;
-        const category = document.getElementById('filter-category').value;
-        const dateFrom = document.getElementById('filter-date-from').value;
-        const dateTo = document.getElementById('filter-date-to').value;
-        const search = document.getElementById('filter-search').value.toLowerCase();
-
-        if (type !== 'all') {
-            transactions = transactions.filter(t => t.type === type);
-        }
-
-        if (category !== 'all') {
-            transactions = transactions.filter(t => t.categoryId === category);
-        }
-
-        if (dateFrom) {
-            transactions = transactions.filter(t => t.date >= dateFrom);
-        }
-
-        if (dateTo) {
-            transactions = transactions.filter(t => t.date <= dateTo);
-        }
-
-        if (search) {
-            transactions = transactions.filter(t =>
-                t.description.toLowerCase().includes(search) ||
-                this.getCategoryById(t.categoryId).name.toLowerCase().includes(search)
-            );
-        }
-
-        return transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
-    }
-
-    renderTransactions() {
-        const tbody = document.getElementById('transactions-tbody');
-        const allTransactions = this.getFilteredTransactions();
-
-        if (allTransactions.length === 0) {
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="5">
-                        <div class="empty-state">
-                            <i class="fas fa-receipt"></i>
-                            <p>No transactions found. Add your first transaction!</p>
-                        </div>
-                    </td>
-                </tr>
-            `;
-            // Remove pagination if present
-            const existingPagination = document.getElementById('transactions-pagination');
-            if (existingPagination) existingPagination.innerHTML = '';
-            return;
-        }
-
-        // Pagination
-        const totalPages = Math.ceil(allTransactions.length / this.transactionsPerPage);
-        if (this.transactionPage > totalPages) this.transactionPage = totalPages;
-        if (this.transactionPage < 1) this.transactionPage = 1;
-        const startIdx = (this.transactionPage - 1) * this.transactionsPerPage;
-        const transactions = allTransactions.slice(startIdx, startIdx + this.transactionsPerPage);
-
-        tbody.innerHTML = transactions.map(t => {
-            let category;
-            if (t.categoryId) {
-                category = this.getCategoryById(t.categoryId);
-            } else if (t.type === 'transfer') {
-                category = { name: 'Transfer', color: '#6366f1' };
-            } else if (t.type === 'payment') {
-                category = { name: 'Payment', color: '#10b981' };
-            } else {
-                category = { name: 'Other', color: '#64748b' };
-            }
-
-            const formattedDate = new Date(t.date).toLocaleDateString();
-
-            let amountClass, amountPrefix;
-            if (t.type === 'income') {
-                amountClass = 'income';
-                amountPrefix = '+';
-            } else if (t.type === 'transfer') {
-                amountClass = 'transfer';
-                amountPrefix = '';
-            } else if (t.type === 'payment') {
-                amountClass = 'payment';
-                amountPrefix = '-';
-            } else {
-                amountClass = 'expense';
-                amountPrefix = '-';
-            }
-
-            // Get account info
-            let accountInfo = '';
-            if (t.type === 'transfer' || t.type === 'payment') {
-                const fromAccount = t.fromAccountId ? this.data.assets.find(a => a.id === t.fromAccountId) : null;
-                const toAccount = t.toAccountId ? this.data.assets.find(a => a.id === t.toAccountId) : null;
-                const fromName = fromAccount ? this.escapeHtml(fromAccount.name) : 'External';
-                const toName = toAccount ? this.escapeHtml(toAccount.name) : 'External';
-                const icon = t.type === 'payment' ? 'credit-card' : 'exchange-alt';
-                accountInfo = `<span class="transaction-account"><i class="fas fa-${icon}"></i> ${fromName} &rarr; ${toName}</span>`;
-            } else if (t.fromAccountId || t.toAccountId) {
-                const accountId = t.fromAccountId || t.toAccountId;
-                const account = this.data.assets.find(a => a.id === accountId);
-                if (account) {
-                    const icon = account.type === 'liability' ? 'credit-card' : 'university';
-                    accountInfo = `<span class="transaction-account"><i class="fas fa-${icon}"></i> ${this.escapeHtml(account.name)}</span>`;
-                }
-            }
-
-            return `
-                <tr>
-                    <td>${formattedDate}</td>
-                    <td>
-                        ${this.escapeHtml(t.description)}
-                        ${accountInfo}
-                    </td>
-                    <td>
-                        <span style="display: inline-flex; align-items: center; gap: 8px;">
-                            <span style="width: 10px; height: 10px; border-radius: 50%; background: ${this.escapeHtml(category.color)}"></span>
-                            ${this.escapeHtml(category.name)}
-                        </span>
-                    </td>
-                    <td class="transaction-amount ${amountClass}">${amountPrefix}${this.formatCurrency(t.amount)}</td>
-                    <td>
-                        <button class="btn-icon" onclick="app.editTransaction('${t.id}')" title="Edit" aria-label="Edit transaction">
-                            <i class="fas fa-edit"></i>
-                        </button>
-                        <button class="btn-icon delete" onclick="app.confirmAction('Delete Transaction', 'Are you sure you want to delete this transaction?', () => app.deleteTransaction('${t.id}'))" title="Delete" aria-label="Delete transaction">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </td>
-                </tr>
-            `;
-        }).join('');
-
-        // Render pagination controls
-        this.renderTransactionPagination(allTransactions.length, totalPages);
-    }
-
-    renderTransactionPagination(totalItems, totalPages) {
-        let paginationEl = document.getElementById('transactions-pagination');
-        if (!paginationEl) {
-            // Create pagination container dynamically after the table card
-            const tableCard = document.getElementById('transactions-table').closest('.card');
-            paginationEl = document.createElement('div');
-            paginationEl.id = 'transactions-pagination';
-            paginationEl.className = 'pagination-controls';
-            tableCard.appendChild(paginationEl);
-        }
-
-        if (totalPages <= 1) {
-            paginationEl.innerHTML = '';
-            return;
-        }
-
-        paginationEl.innerHTML = `
-            <button class="btn-secondary pagination-btn" onclick="app.goToTransactionPage(${this.transactionPage - 1})" ${this.transactionPage <= 1 ? 'disabled' : ''}>
-                <i class="fas fa-chevron-left"></i> Prev
-            </button>
-            <span class="pagination-info">Page ${this.transactionPage} of ${totalPages} (${totalItems} transactions)</span>
-            <button class="btn-secondary pagination-btn" onclick="app.goToTransactionPage(${this.transactionPage + 1})" ${this.transactionPage >= totalPages ? 'disabled' : ''}>
-                Next <i class="fas fa-chevron-right"></i>
-            </button>
-        `;
-    }
-
-    goToTransactionPage(page) {
-        this.transactionPage = page;
-        this.renderTransactions();
-        // Scroll to top of transactions table
-        document.getElementById('transactions-table').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        else { fromSelect.innerHTML = '<option value="">Cash / External</option>' + assetsHtml + liabilitiesHtml; toSelect.innerHTML = '<option value="">External</option>' + assetsHtml + liabilitiesHtml; }
     }
 
     // ==========================================
-    // BUDGETS
+    // ENVELOPE EFFECTS
     // ==========================================
 
-    saveBudget(event) {
-        event.preventDefault();
-
-        const id = document.getElementById('budget-id').value || Date.now().toString();
-        const categoryId = document.getElementById('budget-category').value;
-        const amount = parseFloat(document.getElementById('budget-amount').value);
-
-        // Validation
-        if (!amount || amount <= 0) {
-            this.showToast('Budget amount must be greater than 0', 'error');
-            return;
-        }
-
-        const budget = {
-            id,
-            categoryId,
-            amount,
-            createdAt: new Date().toISOString()
-        };
-
-        const existingIndex = this.data.budgets.findIndex(b => b.id === id);
-        if (existingIndex > -1) {
-            this.data.budgets[existingIndex] = budget;
-            this.showToast('Budget updated', 'success');
-        } else {
-            this.data.budgets.push(budget);
-            this.showToast('Budget created', 'success');
-        }
-
-        this.saveData();
-        this.closeModal('budget-modal');
-        this.renderBudgets();
-        this.renderDashboard();
+    findEnvelopeForTransaction(transaction) {
+        if (transaction.envelopeId) return this.data.envelopes.find(e => e.id === transaction.envelopeId) || null;
+        return null;
     }
 
-    editBudget(id) {
-        const budget = this.data.budgets.find(b => b.id === id);
-        if (!budget) return;
-
-        document.getElementById('budget-id').value = budget.id;
-        document.getElementById('budget-modal-title').textContent = 'Edit Budget';
-
-        // Temporarily add the current category to the select
-        const select = document.getElementById('budget-category');
-        const category = this.getCategoryById(budget.categoryId);
-        select.innerHTML = `<option value="${this.escapeHtml(budget.categoryId)}">${this.escapeHtml(category.name)}</option>`;
-
-        document.getElementById('budget-amount').value = budget.amount;
-
-        this.openModal('budget-modal');
+    applyEnvelopeEffect(transaction) {
+        if (!this.data.envelopes?.length) return;
+        const env = this.findEnvelopeForTransaction(transaction);
+        if (!env) return;
+        env.balance -= transaction.amount;
+        env.spent += transaction.amount;
+        if (env.balance < -0.005) this.showToast(`${env.name} envelope is overdrawn by ${this.formatCurrency(Math.abs(env.balance))}`, 'warning');
     }
 
-    deleteBudget(id) {
-        this.data.budgets = this.data.budgets.filter(b => b.id !== id);
-        this.saveData();
-        this.renderBudgets();
-        this.renderDashboard();
-        this.showToast('Budget deleted', 'success');
-    }
-
-    getBudgetSpending(categoryId) {
-        const now = new Date();
-        const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const lastOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-
-        return this.data.transactions
-            .filter(t =>
-                t.type === 'expense' &&
-                t.categoryId === categoryId &&
-                new Date(t.date) >= firstOfMonth &&
-                new Date(t.date) <= lastOfMonth
-            )
-            .reduce((sum, t) => sum + t.amount, 0);
-    }
-
-    renderBudgets() {
-        const grid = document.getElementById('budgets-grid');
-        const budgets = this.data.budgets;
-
-        // Calculate totals
-        let totalBudgeted = 0;
-        let totalSpent = 0;
-
-        budgets.forEach(b => {
-            totalBudgeted += b.amount;
-            totalSpent += this.getBudgetSpending(b.categoryId);
-        });
-
-        document.getElementById('total-budgeted').textContent = this.formatCurrency(totalBudgeted);
-        document.getElementById('total-spent').textContent = this.formatCurrency(totalSpent);
-        document.getElementById('total-remaining').textContent = this.formatCurrency(totalBudgeted - totalSpent);
-
-        if (budgets.length === 0) {
-            grid.innerHTML = `
-                <div class="empty-state" style="grid-column: 1 / -1;">
-                    <i class="fas fa-piggy-bank"></i>
-                    <p>No budgets set. Create your first budget to start tracking!</p>
-                </div>
-            `;
-            return;
-        }
-
-        grid.innerHTML = budgets.map(b => {
-            const category = this.getCategoryById(b.categoryId);
-            const spent = this.getBudgetSpending(b.categoryId);
-            const remaining = b.amount - spent;
-            const percentage = Math.min((spent / b.amount) * 100, 100);
-
-            let progressClass = 'under';
-            if (percentage >= 90) progressClass = 'over';
-            else if (percentage >= 75) progressClass = 'warning';
-
-            return `
-                <div class="budget-card">
-                    <div class="budget-card-header">
-                        <div class="budget-card-title">
-                            <span class="category-dot" style="background: ${this.escapeHtml(category.color)}"></span>
-                            <h4>${this.escapeHtml(category.name)}</h4>
-                        </div>
-                        <div class="budget-card-actions">
-                            <button class="btn-icon" onclick="app.editBudget('${b.id}')" title="Edit" aria-label="Edit budget">
-                                <i class="fas fa-edit"></i>
-                            </button>
-                            <button class="btn-icon delete" onclick="app.confirmAction('Delete Budget', 'Are you sure you want to delete this budget?', () => app.deleteBudget('${b.id}'))" title="Delete" aria-label="Delete budget">
-                                <i class="fas fa-trash"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="budget-amounts">
-                        <span class="budget-spent">Spent: <span>${this.formatCurrency(spent)}</span></span>
-                        <span class="budget-limit">Budget: <span>${this.formatCurrency(b.amount)}</span></span>
-                    </div>
-                    <div class="budget-progress">
-                        <div class="budget-progress-fill ${progressClass}" style="width: ${percentage}%"></div>
-                    </div>
-                    <div class="budget-remaining">
-                        ${remaining >= 0 ? `${this.formatCurrency(remaining)} remaining` : `${this.formatCurrency(Math.abs(remaining))} over budget`}
-                    </div>
-                </div>
-            `;
-        }).join('');
+    reverseEnvelopeEffect(transaction) {
+        if (!this.data.envelopes?.length) return;
+        const env = this.findEnvelopeForTransaction(transaction);
+        if (!env) return;
+        env.balance += transaction.amount;
+        env.spent = Math.max(0, env.spent - transaction.amount);
     }
 
     // ==========================================
-    // RECURRING TRANSACTIONS
+    // RECURRING
     // ==========================================
 
     saveRecurring(event) {
         event.preventDefault();
-
-        const id = document.getElementById('recurring-id').value || Date.now().toString();
+        const id = document.getElementById('recurring-id').value || this.generateId();
         const type = document.querySelector('input[name="rec-type"]:checked').value;
         const name = document.getElementById('rec-name').value.trim();
         const amount = parseFloat(document.getElementById('rec-amount').value);
         const categoryId = document.getElementById('rec-category').value;
         const frequency = document.getElementById('rec-frequency').value;
         const nextDate = document.getElementById('rec-next-date').value;
-
-        // Validation
-        if (!amount || amount <= 0) {
-            this.showToast('Amount must be greater than 0', 'error');
-            return;
-        }
-        if (!name) {
-            this.showToast('Name cannot be empty', 'error');
-            return;
-        }
-
-        const recurring = {
-            id,
-            type,
-            name,
-            amount,
-            categoryId,
-            frequency,
-            nextDate,
-            createdAt: new Date().toISOString()
-        };
-
-        const existingIndex = this.data.recurring.findIndex(r => r.id === id);
-        if (existingIndex > -1) {
-            this.data.recurring[existingIndex] = recurring;
-            this.showToast('Recurring transaction updated', 'success');
-        } else {
-            this.data.recurring.push(recurring);
-            this.showToast('Recurring transaction added', 'success');
-        }
-
+        if (!amount || amount <= 0) { this.showToast('Amount must be greater than 0', 'error'); return; }
+        if (!name) { this.showToast('Name cannot be empty', 'error'); return; }
+        const recurring = { id, type, name, amount, categoryId, frequency, nextDate, createdAt: new Date().toISOString() };
+        const idx = this.data.recurring.findIndex(r => r.id === id);
+        if (idx > -1) { this.data.recurring[idx] = recurring; this.showToast('Recurring transaction updated', 'success'); }
+        else { this.data.recurring.push(recurring); this.showToast('Recurring transaction added', 'success'); }
         this.saveData();
         this.closeModal('recurring-modal');
         this.renderRecurring();
@@ -1435,21 +1342,17 @@ class FinanceApp {
     }
 
     editRecurring(id) {
-        const rec = this.data.recurring.find(r => r.id === id);
-        if (!rec) return;
-
-        document.getElementById('recurring-id').value = rec.id;
+        const r = this.data.recurring.find(r => r.id === id);
+        if (!r) return;
+        document.getElementById('recurring-id').value = r.id;
         document.getElementById('recurring-modal-title').textContent = 'Edit Recurring Transaction';
-
-        document.getElementById(`rec-${rec.type}`).checked = true;
+        document.getElementById(`rec-${r.type}`).checked = true;
         this.updateRecurringCategories();
-
-        document.getElementById('rec-name').value = rec.name;
-        document.getElementById('rec-amount').value = rec.amount;
-        document.getElementById('rec-category').value = rec.categoryId;
-        document.getElementById('rec-frequency').value = rec.frequency;
-        document.getElementById('rec-next-date').value = rec.nextDate;
-
+        document.getElementById('rec-name').value = r.name;
+        document.getElementById('rec-amount').value = r.amount;
+        document.getElementById('rec-category').value = r.categoryId;
+        document.getElementById('rec-frequency').value = r.frequency;
+        document.getElementById('rec-next-date').value = r.nextDate;
         this.openModal('recurring-modal');
     }
 
@@ -1462,2080 +1365,640 @@ class FinanceApp {
     }
 
     processRecurringTransactions() {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
+        const today = new Date(); today.setHours(0, 0, 0, 0);
         this.data.recurring.forEach(rec => {
-            let nextDate = new Date(rec.nextDate);
-            nextDate.setHours(0, 0, 0, 0);
-
+            let nextDate = this.parseDateLocal(rec.nextDate);
             while (nextDate <= today) {
-                // Create transaction
                 const transaction = {
-                    id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-                    type: rec.type,
-                    amount: rec.amount,
-                    description: rec.name + ' (Recurring)',
-                    categoryId: rec.categoryId,
-                    date: nextDate.toISOString().split('T')[0],
-                    notes: 'Auto-generated from recurring transaction',
-                    createdAt: new Date().toISOString()
+                    id: this.generateId(), type: rec.type, amount: rec.amount,
+                    description: rec.name + ' (Recurring)', categoryId: rec.categoryId,
+                    date: nextDate.toISOString().split('T')[0], notes: 'Auto-generated from recurring transaction',
+                    fromAccountId: null, toAccountId: null, createdAt: new Date().toISOString()
                 };
                 this.data.transactions.push(transaction);
-
-                // Calculate next occurrence
                 nextDate = this.getNextRecurringDate(nextDate, rec.frequency);
             }
-
-            // Update next date
             rec.nextDate = nextDate.toISOString().split('T')[0];
         });
-
         this.saveData();
     }
 
     getNextRecurringDate(date, frequency) {
         const next = new Date(date);
-        switch(frequency) {
-            case 'weekly':
-                next.setDate(next.getDate() + 7);
-                break;
-            case 'biweekly':
-                next.setDate(next.getDate() + 14);
-                break;
-            case 'monthly':
-                next.setMonth(next.getMonth() + 1);
-                break;
-            case 'quarterly':
-                next.setMonth(next.getMonth() + 3);
-                break;
-            case 'yearly':
-                next.setFullYear(next.getFullYear() + 1);
-                break;
+        switch (frequency) {
+            case 'weekly': next.setDate(next.getDate() + 7); break;
+            case 'biweekly': next.setDate(next.getDate() + 14); break;
+            case 'monthly': next.setMonth(next.getMonth() + 1); break;
+            case 'quarterly': next.setMonth(next.getMonth() + 3); break;
+            case 'yearly': next.setFullYear(next.getFullYear() + 1); break;
         }
         return next;
     }
 
     getMonthlyEquivalent(amount, frequency) {
-        switch(frequency) {
-            case 'weekly': return amount * 4.33;
-            case 'biweekly': return amount * 2.17;
-            case 'monthly': return amount;
-            case 'quarterly': return amount / 3;
-            case 'yearly': return amount / 12;
-            default: return amount;
-        }
-    }
-
-    renderRecurring() {
-        const tbody = document.getElementById('recurring-tbody');
-        const recurring = this.data.recurring;
-
-        // Calculate totals
-        let monthlyIncome = 0;
-        let monthlyExpenses = 0;
-
-        recurring.forEach(r => {
-            const monthly = this.getMonthlyEquivalent(r.amount, r.frequency);
-            if (r.type === 'income') {
-                monthlyIncome += monthly;
-            } else {
-                monthlyExpenses += monthly;
-            }
-        });
-
-        document.getElementById('recurring-income').textContent = this.formatCurrency(monthlyIncome);
-        document.getElementById('recurring-expenses').textContent = this.formatCurrency(monthlyExpenses);
-        document.getElementById('recurring-net').textContent = this.formatCurrency(monthlyIncome - monthlyExpenses);
-
-        if (recurring.length === 0) {
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="6">
-                        <div class="empty-state">
-                            <i class="fas fa-sync-alt"></i>
-                            <p>No recurring transactions. Add subscriptions and regular bills here!</p>
-                        </div>
-                    </td>
-                </tr>
-            `;
-            return;
-        }
-
-        tbody.innerHTML = recurring.map(r => {
-            const category = this.getCategoryById(r.categoryId);
-            const amountClass = r.type === 'income' ? 'income' : 'expense';
-            const amountPrefix = r.type === 'income' ? '+' : '-';
-            const nextDate = new Date(r.nextDate).toLocaleDateString();
-
-            return `
-                <tr>
-                    <td>${this.escapeHtml(r.name)}</td>
-                    <td>
-                        <span style="display: inline-flex; align-items: center; gap: 8px;">
-                            <span style="width: 10px; height: 10px; border-radius: 50%; background: ${this.escapeHtml(category.color)}"></span>
-                            ${this.escapeHtml(category.name)}
-                        </span>
-                    </td>
-                    <td class="transaction-amount ${amountClass}">${amountPrefix}${this.formatCurrency(r.amount)}</td>
-                    <td style="text-transform: capitalize;">${this.escapeHtml(r.frequency)}</td>
-                    <td>${nextDate}</td>
-                    <td>
-                        <button class="btn-icon" onclick="app.editRecurring('${r.id}')" title="Edit" aria-label="Edit recurring transaction">
-                            <i class="fas fa-edit"></i>
-                        </button>
-                        <button class="btn-icon delete" onclick="app.confirmAction('Delete Recurring', 'Are you sure you want to delete this recurring transaction?', () => app.deleteRecurring('${r.id}'))" title="Delete" aria-label="Delete recurring transaction">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </td>
-                </tr>
-            `;
-        }).join('');
+        const factors = { weekly: 4.33, biweekly: 2.17, monthly: 1, quarterly: 1/3, yearly: 1/12 };
+        return amount * (factors[frequency] || 1);
     }
 
     // ==========================================
-    // NET WORTH
+    // ACCOUNTS / ASSETS
     // ==========================================
 
     saveAsset(event) {
         event.preventDefault();
-
-        const id = document.getElementById('asset-id').value || Date.now().toString();
+        const id = document.getElementById('asset-id').value || this.generateId();
         const type = document.querySelector('input[name="asset-type"]:checked').value;
         const name = document.getElementById('asset-name').value.trim();
         const value = parseFloat(document.getElementById('asset-value').value);
         const category = document.getElementById('asset-category-select').value;
         const notes = document.getElementById('asset-notes').value;
+        if (!name) { this.showToast('Name cannot be empty', 'error'); return; }
+        if (isNaN(value) || value < 0) { this.showToast('Value must be 0 or greater', 'error'); return; }
 
-        // Validation
-        if (!name) {
-            this.showToast('Name cannot be empty', 'error');
-            return;
-        }
-        if (isNaN(value) || value < 0) {
-            this.showToast('Value must be 0 or greater', 'error');
-            return;
-        }
-
-        const asset = {
-            id,
-            type,
-            name,
-            value,
-            category,
-            notes,
-            updatedAt: new Date().toISOString()
-        };
-
-        // Add institution/account info if provided
+        const asset = { id, type, name, value, category, notes, updatedAt: new Date().toISOString() };
         const institution = document.getElementById('asset-institution').value.trim();
-        const accountLast4 = document.getElementById('asset-account-last4').value.trim();
+        const last4 = document.getElementById('asset-account-last4').value.trim();
         if (institution) asset.institution = institution;
-        if (accountLast4) asset.accountLast4 = accountLast4;
+        if (last4) asset.accountLast4 = last4;
 
-        // Add retirement-specific fields
-        const retirementTypes = ['401k', '403b', 'ira', 'roth-ira', 'pension', 'hsa', '529'];
-        if (retirementTypes.includes(category)) {
-            const employerMatch = parseFloat(document.getElementById('asset-employer-match').value) || 0;
-            const contributionLimit = parseFloat(document.getElementById('asset-contribution-limit').value) || 0;
-            const ytdContribution = parseFloat(document.getElementById('asset-ytd-contribution').value) || 0;
-            if (employerMatch > 0) asset.employerMatch = employerMatch;
-            if (contributionLimit > 0) asset.contributionLimit = contributionLimit;
-            asset.ytdContribution = ytdContribution;
+        const retTypes = ['401k', '403b', 'ira', 'roth-ira', 'pension', 'hsa', '529'];
+        if (retTypes.includes(category)) {
+            const em = parseFloat(document.getElementById('asset-employer-match').value) || 0;
+            const cl = parseFloat(document.getElementById('asset-contribution-limit').value) || 0;
+            const ytd = parseFloat(document.getElementById('asset-ytd-contribution').value) || 0;
+            if (em > 0) asset.employerMatch = em;
+            if (cl > 0) asset.contributionLimit = cl;
+            asset.ytdContribution = ytd;
         }
 
-        // Add debt-specific fields for liabilities
         if (type === 'liability') {
-            const rate = parseFloat(document.getElementById('asset-rate').value) || 0;
-            const minPayment = parseFloat(document.getElementById('asset-min-payment').value) || 0;
-            const originalAmount = parseFloat(document.getElementById('asset-original').value) || value;
-            asset.interestRate = rate;
-            asset.minPayment = minPayment;
-            asset.originalAmount = originalAmount;
-
-            // Credit limit for credit cards
-            if (category === 'credit-card') {
-                const creditLimit = parseFloat(document.getElementById('asset-credit-limit').value) || 0;
-                if (creditLimit > 0) asset.creditLimit = creditLimit;
-            }
+            asset.interestRate = parseFloat(document.getElementById('asset-rate').value) || 0;
+            asset.minPayment = parseFloat(document.getElementById('asset-min-payment').value) || 0;
+            asset.originalAmount = parseFloat(document.getElementById('asset-original').value) || value;
+            if (category === 'credit-card') { const cl = parseFloat(document.getElementById('asset-credit-limit').value) || 0; if (cl > 0) asset.creditLimit = cl; }
         }
 
-        const existingIndex = this.data.assets.findIndex(a => a.id === id);
-        if (existingIndex > -1) {
-            // Preserve contribution/payment/withdrawal history
-            asset.contributions = this.data.assets[existingIndex].contributions || [];
-            asset.payments = this.data.assets[existingIndex].payments || [];
-            asset.withdrawals = this.data.assets[existingIndex].withdrawals || [];
-            this.data.assets[existingIndex] = asset;
+        const idx = this.data.assets.findIndex(a => a.id === id);
+        if (idx > -1) {
+            asset.contributions = this.data.assets[idx].contributions || [];
+            asset.payments = this.data.assets[idx].payments || [];
+            asset.withdrawals = this.data.assets[idx].withdrawals || [];
+            this.data.assets[idx] = asset;
             this.showToast('Updated successfully', 'success');
         } else {
-            asset.contributions = [];
-            asset.payments = [];
-            asset.withdrawals = [];
+            asset.contributions = []; asset.payments = []; asset.withdrawals = [];
             this.data.assets.push(asset);
             this.showToast('Added successfully', 'success');
         }
-
         this.recordNetworthSnapshot();
         this.saveData();
         this.closeModal('asset-modal');
-        this.renderNetWorth();
+        this.renderAccounts();
         this.renderDashboard();
     }
 
     editAsset(id) {
-        const asset = this.data.assets.find(a => a.id === id);
-        if (!asset) return;
-
-        document.getElementById('asset-id').value = asset.id;
-        document.getElementById('asset-modal-title').textContent = 'Edit ' + (asset.type === 'asset' ? 'Asset' : 'Liability');
-
-        document.getElementById(`asset-${asset.type}`).checked = true;
-        document.getElementById('asset-name').value = asset.name;
-        document.getElementById('asset-value').value = asset.value;
-        document.getElementById('asset-category-select').value = asset.category;
-        document.getElementById('asset-notes').value = asset.notes || '';
-
-        // Fill institution/account info
-        document.getElementById('asset-institution').value = asset.institution || '';
-        document.getElementById('asset-account-last4').value = asset.accountLast4 || '';
-
-        // Fill retirement-specific fields
-        document.getElementById('asset-employer-match').value = asset.employerMatch || '';
-        document.getElementById('asset-contribution-limit').value = asset.contributionLimit || '';
-        document.getElementById('asset-ytd-contribution').value = asset.ytdContribution || '';
-
-        // Fill debt fields if liability
-        if (asset.type === 'liability') {
-            document.getElementById('asset-rate').value = asset.interestRate || '';
-            document.getElementById('asset-min-payment').value = asset.minPayment || '';
-            document.getElementById('asset-original').value = asset.originalAmount || '';
-            document.getElementById('asset-credit-limit').value = asset.creditLimit || '';
+        const a = this.data.assets.find(a => a.id === id);
+        if (!a) return;
+        document.getElementById('asset-id').value = a.id;
+        document.getElementById('asset-modal-title').textContent = 'Edit ' + (a.type === 'asset' ? 'Asset' : 'Liability');
+        document.getElementById(`asset-${a.type}`).checked = true;
+        document.getElementById('asset-name').value = a.name;
+        document.getElementById('asset-value').value = a.value;
+        document.getElementById('asset-category-select').value = a.category;
+        document.getElementById('asset-notes').value = a.notes || '';
+        document.getElementById('asset-institution').value = a.institution || '';
+        document.getElementById('asset-account-last4').value = a.accountLast4 || '';
+        document.getElementById('asset-employer-match').value = a.employerMatch || '';
+        document.getElementById('asset-contribution-limit').value = a.contributionLimit || '';
+        document.getElementById('asset-ytd-contribution').value = a.ytdContribution || '';
+        if (a.type === 'liability') {
+            document.getElementById('asset-rate').value = a.interestRate || '';
+            document.getElementById('asset-min-payment').value = a.minPayment || '';
+            document.getElementById('asset-original').value = a.originalAmount || '';
+            document.getElementById('asset-credit-limit').value = a.creditLimit || '';
         }
-
-        this.toggleDebtFields();
-        this.openModal('asset-modal');
-    }
-
-    toggleDebtFields() {
-        const isLiability = document.getElementById('asset-liability').checked;
-        document.getElementById('debt-fields').style.display = isLiability ? 'block' : 'none';
         this.toggleAccountFields();
-    }
-
-    toggleAccountFields() {
-        const category = document.getElementById('asset-category-select').value;
-        const isLiability = document.getElementById('asset-liability').checked;
-
-        // Get field containers
-        const accountFields = document.getElementById('account-fields');
-        const retirementFields = document.getElementById('retirement-fields');
-        const debtFields = document.getElementById('debt-fields');
-        const creditLimitGroup = document.getElementById('credit-limit-group');
-
-        // Reset all fields
-        accountFields.style.display = 'none';
-        retirementFields.style.display = 'none';
-        if (creditLimitGroup) creditLimitGroup.style.display = 'none';
-
-        // Show basic account fields for bank accounts, investments, retirement
-        const showAccountFields = ['checking', 'savings', 'brokerage', '401k', '403b', 'ira', 'roth-ira', 'hsa', 'pension', 'crypto', '529', 'fsa'];
-        if (showAccountFields.includes(category)) {
-            accountFields.style.display = 'block';
-        }
-
-        // Show retirement-specific fields
-        const retirementTypes = ['401k', '403b', 'ira', 'roth-ira', 'pension', 'hsa', '529'];
-        if (retirementTypes.includes(category)) {
-            retirementFields.style.display = 'block';
-        }
-
-        // Show debt fields for liabilities
-        if (isLiability) {
-            debtFields.style.display = 'block';
-            // Show credit limit for credit cards
-            if (category === 'credit-card' && creditLimitGroup) {
-                creditLimitGroup.style.display = 'block';
-            }
-        }
-    }
-
-    // Contribution Modal
-    openContributionModal(assetId) {
-        const asset = this.data.assets.find(a => a.id === assetId);
-        if (!asset) return;
-
-        document.getElementById('contribution-asset-id').value = assetId;
-        document.getElementById('contribution-asset-name').textContent = asset.name;
-        document.getElementById('contribution-date').valueAsDate = new Date();
-        document.getElementById('contribution-recurring').checked = false;
-        document.getElementById('contribution-recurring-fields').style.display = 'none';
-
-        // Populate "Pay From" dropdown with asset accounts (excluding the target)
-        const fromSelect = document.getElementById('contribution-from-account');
-        const otherAssets = this.data.assets.filter(a => a.type === 'asset' && a.id !== assetId);
-        let optionsHtml = '<option value="">Cash / External</option>';
-        if (otherAssets.length > 0) {
-            optionsHtml += '<optgroup label="Your Accounts">';
-            otherAssets.forEach(a => {
-                const name = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
-                optionsHtml += `<option value="${this.escapeHtml(a.id)}">${name}</option>`;
-            });
-            optionsHtml += '</optgroup>';
-        }
-        fromSelect.innerHTML = optionsHtml;
-
-        this.openModal('contribution-modal');
-    }
-
-    saveContribution(event) {
-        event.preventDefault();
-
-        const assetId = document.getElementById('contribution-asset-id').value;
-        const amount = parseFloat(document.getElementById('contribution-amount').value);
-        const date = document.getElementById('contribution-date').value;
-        const fromAccountId = document.getElementById('contribution-from-account').value || null;
-        const isRecurring = document.getElementById('contribution-recurring').checked;
-        const frequency = document.getElementById('contribution-frequency').value;
-
-        // Validation
-        if (!amount || amount <= 0) {
-            this.showToast('Contribution amount must be greater than 0', 'error');
-            return;
-        }
-
-        const asset = this.data.assets.find(a => a.id === assetId);
-        if (!asset) return;
-
-        // Update asset value
-        asset.value += amount;
-        asset.updatedAt = new Date().toISOString();
-
-        // Deduct from source account if selected
-        if (fromAccountId) {
-            const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
-            if (fromAccount) {
-                fromAccount.value -= amount;
-                fromAccount.updatedAt = new Date().toISOString();
-            }
-        }
-
-        // Record contribution
-        if (!asset.contributions) asset.contributions = [];
-        asset.contributions.push({
-            id: Date.now().toString(),
-            amount,
-            date,
-            createdAt: new Date().toISOString()
-        });
-
-        // Create transaction record
-        const transaction = {
-            id: Date.now().toString(),
-            type: 'transfer',
-            amount: amount,
-            description: `Contribution to ${asset.name}`,
-            categoryId: null,
-            date: date,
-            notes: 'Auto-created from contribution',
-            fromAccountId: fromAccountId,
-            toAccountId: assetId,
-            linkedAssetId: assetId,
-            createdAt: new Date().toISOString()
-        };
-        this.data.transactions.push(transaction);
-
-        // Create recurring if checked
-        if (isRecurring) {
-            const nextDate = this.getNextRecurringDate(new Date(date), frequency);
-            this.data.recurring.push({
-                id: Date.now().toString() + '-rec',
-                type: 'expense',
-                name: `Contribution to ${asset.name}`,
-                amount: amount,
-                categoryId: asset.category === 'retirement' ? 'investments' : 'other-expense',
-                frequency: frequency,
-                nextDate: nextDate.toISOString().split('T')[0],
-                linkedAssetId: assetId,
-                createdAt: new Date().toISOString()
-            });
-        }
-
-        this.recordNetworthSnapshot();
-        this.saveData();
-        this.closeModal('contribution-modal');
-        this.renderNetWorth();
-        this.renderDashboard();
-        this.showToast(`Added ${this.formatCurrency(amount)} to ${asset.name}`, 'success');
-    }
-
-    // Debt Payment Modal
-    openPaymentModal(debtId) {
-        const debt = this.data.assets.find(a => a.id === debtId);
-        if (!debt) return;
-
-        document.getElementById('payment-debt-id').value = debtId;
-        document.getElementById('payment-debt-name').textContent = debt.name;
-        document.getElementById('payment-debt-balance').textContent = this.formatCurrency(debt.value);
-        document.getElementById('payment-debt-rate').textContent = (debt.interestRate || 0) + '%';
-        document.getElementById('payment-date').valueAsDate = new Date();
-        document.getElementById('payment-amount').value = debt.minPayment || '';
-
-        // Populate "Pay From" dropdown with asset accounts
-        const fromSelect = document.getElementById('payment-from-account');
-        const assets = this.data.assets.filter(a => a.type === 'asset');
-        let optionsHtml = '<option value="">Cash / External</option>';
-        if (assets.length > 0) {
-            optionsHtml += '<optgroup label="Your Accounts">';
-            assets.forEach(a => {
-                const name = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
-                optionsHtml += `<option value="${this.escapeHtml(a.id)}">${name}</option>`;
-            });
-            optionsHtml += '</optgroup>';
-        }
-        fromSelect.innerHTML = optionsHtml;
-
-        this.currentDebt = debt;
-        this.calculatePaymentSplit();
-
-        this.openModal('payment-modal');
-    }
-
-    calculatePaymentSplit() {
-        if (!this.currentDebt) return;
-
-        const payment = parseFloat(document.getElementById('payment-amount').value) || 0;
-        const rate = this.currentDebt.interestRate || 0;
-        const balance = this.currentDebt.value;
-
-        // Monthly interest
-        const monthlyRate = rate / 100 / 12;
-        const interestPortion = balance * monthlyRate;
-        const principalPortion = Math.max(0, payment - interestPortion);
-
-        document.getElementById('payment-interest').textContent = this.formatCurrency(interestPortion);
-        document.getElementById('payment-principal').textContent = this.formatCurrency(principalPortion);
-    }
-
-    saveDebtPayment(event) {
-        event.preventDefault();
-
-        const debtId = document.getElementById('payment-debt-id').value;
-        const payment = parseFloat(document.getElementById('payment-amount').value);
-        const date = document.getElementById('payment-date').value;
-        const fromAccountId = document.getElementById('payment-from-account').value || null;
-
-        // Validation
-        if (!payment || payment <= 0) {
-            this.showToast('Payment amount must be greater than 0', 'error');
-            return;
-        }
-
-        const debt = this.data.assets.find(a => a.id === debtId);
-        if (!debt) return;
-
-        if (payment > debt.value) {
-            this.showToast('Payment amount exceeds debt balance', 'error');
-            return;
-        }
-
-        const rate = debt.interestRate || 0;
-        const monthlyRate = rate / 100 / 12;
-        const interestPortion = debt.value * monthlyRate;
-        const principalPortion = Math.max(0, payment - interestPortion);
-
-        // Update debt balance
-        debt.value = Math.max(0, debt.value - principalPortion);
-        debt.updatedAt = new Date().toISOString();
-
-        // Deduct from source account if selected
-        if (fromAccountId) {
-            const fromAccount = this.data.assets.find(a => a.id === fromAccountId);
-            if (fromAccount) {
-                fromAccount.value -= payment;
-                fromAccount.updatedAt = new Date().toISOString();
-            }
-        }
-
-        // Distribute CC payment across envelopes with ccPending
-        if (debt.type === 'liability' && debt.category === 'credit-card') {
-            this.distributePaymentAcrossEnvelopes(payment, fromAccountId);
-        }
-
-        // Record payment
-        if (!debt.payments) debt.payments = [];
-        debt.payments.push({
-            id: Date.now().toString(),
-            amount: payment,
-            principal: principalPortion,
-            interest: interestPortion,
-            date: date,
-            balanceAfter: debt.value,
-            createdAt: new Date().toISOString()
-        });
-
-        // Create transaction record
-        const transaction = {
-            id: Date.now().toString(),
-            type: 'payment',
-            amount: payment,
-            description: `Payment to ${debt.name}`,
-            categoryId: null,
-            date: date,
-            notes: `Principal: ${this.formatCurrency(principalPortion)}, Interest: ${this.formatCurrency(interestPortion)}`,
-            fromAccountId: fromAccountId,
-            toAccountId: debtId,
-            linkedDebtId: debtId,
-            createdAt: new Date().toISOString()
-        };
-        this.data.transactions.push(transaction);
-
-        this.recordNetworthSnapshot();
-        this.saveData();
-        this.closeModal('payment-modal');
-        this.currentDebt = null;
-        this.renderNetWorth();
-        this.renderDashboard();
-
-        if (debt.value === 0) {
-            this.showToast(`Congratulations! ${debt.name} is paid off!`, 'success');
-        } else {
-            this.showToast(`Payment recorded. Remaining: ${this.formatCurrency(debt.value)}`, 'success');
-        }
-    }
-
-    calculatePayoffDate(debt) {
-        if (!debt.interestRate || !debt.minPayment || debt.minPayment <= 0) return null;
-
-        let balance = debt.value;
-        const monthlyRate = debt.interestRate / 100 / 12;
-        const payment = debt.minPayment;
-        let months = 0;
-        const maxMonths = 360; // 30 years max
-
-        while (balance > 0 && months < maxMonths) {
-            const interest = balance * monthlyRate;
-            const principal = payment - interest;
-            if (principal <= 0) return null; // Payment doesn't cover interest
-            balance -= principal;
-            months++;
-        }
-
-        if (months >= maxMonths) return null;
-
-        const payoffDate = new Date();
-        payoffDate.setMonth(payoffDate.getMonth() + months);
-        return payoffDate;
-    }
-
-    // Withdrawal Modal
-    openWithdrawalModal(assetId) {
-        const asset = this.data.assets.find(a => a.id === assetId);
-        if (!asset) return;
-
-        document.getElementById('withdrawal-asset-id').value = assetId;
-        document.getElementById('withdrawal-asset-name').textContent = asset.name;
-        document.getElementById('withdrawal-date').valueAsDate = new Date();
-        document.getElementById('withdrawal-amount').value = '';
-        document.getElementById('withdrawal-reason').value = '';
-
-        // Populate "Deposit To" dropdown with asset accounts (excluding the source)
-        const toSelect = document.getElementById('withdrawal-to-account');
-        const otherAssets = this.data.assets.filter(a => a.type === 'asset' && a.id !== assetId);
-        let optionsHtml = '<option value="">Cash / External</option>';
-        if (otherAssets.length > 0) {
-            optionsHtml += '<optgroup label="Your Accounts">';
-            otherAssets.forEach(a => {
-                const name = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
-                optionsHtml += `<option value="${this.escapeHtml(a.id)}">${name}</option>`;
-            });
-            optionsHtml += '</optgroup>';
-        }
-        toSelect.innerHTML = optionsHtml;
-
-        this.openModal('withdrawal-modal');
-    }
-
-    saveWithdrawal(event) {
-        event.preventDefault();
-
-        const assetId = document.getElementById('withdrawal-asset-id').value;
-        const amount = parseFloat(document.getElementById('withdrawal-amount').value);
-        const date = document.getElementById('withdrawal-date').value;
-        const reason = document.getElementById('withdrawal-reason').value;
-        const toAccountId = document.getElementById('withdrawal-to-account').value || null;
-
-        // Validation
-        if (!amount || amount <= 0) {
-            this.showToast('Withdrawal amount must be greater than 0', 'error');
-            return;
-        }
-
-        const asset = this.data.assets.find(a => a.id === assetId);
-        if (!asset) return;
-
-        if (amount > asset.value) {
-            this.showToast('Withdrawal amount exceeds account balance', 'error');
-            return;
-        }
-
-        // Update asset value
-        asset.value -= amount;
-        asset.updatedAt = new Date().toISOString();
-
-        // Deposit to destination account if selected
-        if (toAccountId) {
-            const toAccount = this.data.assets.find(a => a.id === toAccountId);
-            if (toAccount) {
-                toAccount.value += amount;
-                toAccount.updatedAt = new Date().toISOString();
-            }
-        }
-
-        // Record withdrawal
-        if (!asset.withdrawals) asset.withdrawals = [];
-        asset.withdrawals.push({
-            id: Date.now().toString(),
-            amount,
-            date,
-            reason,
-            createdAt: new Date().toISOString()
-        });
-
-        // Create transaction record
-        const reasonLabels = {
-            'transfer': 'Transfer',
-            'expense': 'Personal expense',
-            'medical': 'Medical expense',
-            'education': 'Education expense',
-            'retirement': 'Retirement distribution',
-            'emergency': 'Emergency',
-            'other': 'Other'
-        };
-
-        const transaction = {
-            id: Date.now().toString(),
-            type: toAccountId ? 'transfer' : 'income',
-            amount: amount,
-            description: `Withdrawal from ${asset.name}${reason ? ' - ' + reasonLabels[reason] : ''}`,
-            categoryId: toAccountId ? null : 'other-income',
-            date: date,
-            notes: 'Auto-created from withdrawal',
-            fromAccountId: assetId,
-            toAccountId: toAccountId,
-            linkedAssetId: assetId,
-            createdAt: new Date().toISOString()
-        };
-        this.data.transactions.push(transaction);
-
-        this.recordNetworthSnapshot();
-        this.saveData();
-        this.closeModal('withdrawal-modal');
-        this.renderNetWorth();
-        this.renderDashboard();
-        this.showToast(`Withdrew ${this.formatCurrency(amount)} from ${asset.name}`, 'success');
-    }
-
-    // Account Details Modal
-    openAccountDetails(assetId) {
-        const asset = this.data.assets.find(a => a.id === assetId);
-        if (!asset) return;
-
-        document.getElementById('account-details-title').textContent = asset.name;
-
-        // Build summary
-        const summaryEl = document.getElementById('account-summary');
-        let summaryHtml = `
-            <div class="summary-item">
-                <span class="label">Current Value</span>
-                <span class="value ${asset.type === 'asset' ? 'positive' : 'negative'}">${this.formatCurrency(asset.value)}</span>
-            </div>
-            <div class="summary-item">
-                <span class="label">Account Type</span>
-                <span class="value">${this.formatAccountType(asset.category)}</span>
-            </div>
-        `;
-
-        if (asset.institution) {
-            summaryHtml += `
-                <div class="summary-item">
-                    <span class="label">Institution</span>
-                    <span class="value">${this.escapeHtml(asset.institution)}</span>
-                </div>
-            `;
-        }
-
-        if (asset.accountLast4) {
-            summaryHtml += `
-                <div class="summary-item">
-                    <span class="label">Account #</span>
-                    <span class="value">****${this.escapeHtml(asset.accountLast4)}</span>
-                </div>
-            `;
-        }
-
-        // Retirement-specific info
-        if (asset.contributionLimit) {
-            const ytd = asset.ytdContribution || 0;
-            const remaining = asset.contributionLimit - ytd;
-            const percentage = (ytd / asset.contributionLimit) * 100;
-            summaryHtml += `
-                <div class="summary-item full-width">
-                    <span class="label">YTD Contributions</span>
-                    <span class="value">${this.formatCurrency(ytd)} / ${this.formatCurrency(asset.contributionLimit)}</span>
-                    <div class="contribution-progress-bar">
-                        <div class="contribution-progress-fill" style="width: ${Math.min(percentage, 100)}%"></div>
-                    </div>
-                    <span class="remaining">${this.formatCurrency(remaining)} remaining</span>
-                </div>
-            `;
-        }
-
-        if (asset.employerMatch) {
-            summaryHtml += `
-                <div class="summary-item">
-                    <span class="label">Employer Match</span>
-                    <span class="value">${asset.employerMatch}%</span>
-                </div>
-            `;
-        }
-
-        // Credit card info
-        if (asset.creditLimit) {
-            const utilization = (asset.value / asset.creditLimit) * 100;
-            summaryHtml += `
-                <div class="summary-item">
-                    <span class="label">Credit Limit</span>
-                    <span class="value">${this.formatCurrency(asset.creditLimit)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">Utilization</span>
-                    <span class="value ${utilization > 30 ? 'negative' : 'positive'}">${utilization.toFixed(1)}%</span>
-                </div>
-            `;
-        }
-
-        // Debt info
-        if (asset.type === 'liability' && asset.originalAmount) {
-            const paidOff = asset.originalAmount - asset.value;
-            const percentage = (paidOff / asset.originalAmount) * 100;
-            summaryHtml += `
-                <div class="summary-item">
-                    <span class="label">Original Amount</span>
-                    <span class="value">${this.formatCurrency(asset.originalAmount)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">Paid Off</span>
-                    <span class="value positive">${percentage.toFixed(1)}%</span>
-                </div>
-            `;
-        }
-
-        summaryEl.innerHTML = summaryHtml;
-
-        // Build actions
-        const actionsEl = document.getElementById('account-actions');
-        if (asset.type === 'asset') {
-            actionsEl.innerHTML = `
-                <button class="btn-primary" onclick="app.closeModal('account-details-modal'); app.openContributionModal('${asset.id}')">
-                    <i class="fas fa-plus"></i> Add Contribution
-                </button>
-                <button class="btn-secondary btn-withdraw" onclick="app.closeModal('account-details-modal'); app.openWithdrawalModal('${asset.id}')">
-                    <i class="fas fa-minus"></i> Withdraw
-                </button>
-            `;
-        } else {
-            actionsEl.innerHTML = `
-                <button class="btn-primary" onclick="app.closeModal('account-details-modal'); app.openPaymentModal('${asset.id}')">
-                    <i class="fas fa-credit-card"></i> Make Payment
-                </button>
-            `;
-        }
-
-        // Build transaction history
-        const historyEl = document.getElementById('account-history');
-        let history = [];
-
-        // Add contributions
-        if (asset.contributions) {
-            asset.contributions.forEach(c => {
-                history.push({
-                    date: c.date,
-                    type: 'contribution',
-                    description: 'Contribution',
-                    amount: c.amount,
-                    icon: 'plus',
-                    color: '#10b981',
-                    isPositive: true
-                });
-            });
-        }
-
-        // Add withdrawals
-        if (asset.withdrawals) {
-            asset.withdrawals.forEach(w => {
-                history.push({
-                    date: w.date,
-                    type: 'withdrawal',
-                    description: 'Withdrawal' + (w.reason ? ` - ${w.reason}` : ''),
-                    amount: w.amount,
-                    icon: 'minus',
-                    color: '#ef4444',
-                    isPositive: false
-                });
-            });
-        }
-
-        // Add payments (for liabilities)
-        if (asset.payments) {
-            asset.payments.forEach(p => {
-                history.push({
-                    date: p.date,
-                    type: 'payment',
-                    description: `Payment (P: ${this.formatCurrency(p.principal)}, I: ${this.formatCurrency(p.interest)})`,
-                    amount: p.amount,
-                    icon: 'credit-card',
-                    color: '#6366f1',
-                    isPositive: true // Payment reduces debt
-                });
-            });
-        }
-
-        // Add linked transactions (from transaction form)
-        this.data.transactions.forEach(t => {
-            const isFromThis = t.fromAccountId === asset.id;
-            const isToThis = t.toAccountId === asset.id;
-
-            if (isFromThis || isToThis) {
-                let isPositive, icon, color, description;
-
-                if (t.type === 'expense') {
-                    // Expense transaction
-                    if (asset.type === 'asset') {
-                        // Bank account: expense means money OUT (negative)
-                        isPositive = false;
-                        icon = 'shopping-cart';
-                        color = '#ef4444';
-                    } else {
-                        // Credit card: expense means charge added (debt increases = negative for you)
-                        isPositive = false;
-                        icon = 'shopping-cart';
-                        color = '#ef4444';
-                    }
-                    description = t.description;
-                } else if (t.type === 'income') {
-                    // Income to this account (always positive - money coming in)
-                    isPositive = true;
-                    icon = 'arrow-down';
-                    color = '#10b981';
-                    description = t.description;
-                } else if (t.type === 'transfer') {
-                    // Transfer between asset accounts
-                    const otherAccountId = isFromThis ? t.toAccountId : t.fromAccountId;
-                    const otherAccount = this.data.assets.find(a => a.id === otherAccountId);
-                    const otherName = otherAccount ? otherAccount.name : 'External';
-
-                    if (isFromThis) {
-                        isPositive = false;
-                        description = `Transfer to ${otherName}`;
-                    } else {
-                        isPositive = true;
-                        description = `Transfer from ${otherName}`;
-                    }
-                    icon = 'exchange-alt';
-                    color = '#6366f1';
-                } else if (t.type === 'payment') {
-                    // Debt payment
-                    const otherAccountId = isFromThis ? t.toAccountId : t.fromAccountId;
-                    const otherAccount = this.data.assets.find(a => a.id === otherAccountId);
-                    const otherName = otherAccount ? otherAccount.name : 'External';
-
-                    if (isFromThis) {
-                        // This is the bank account paying
-                        isPositive = false;
-                        description = `Payment to ${otherName}`;
-                        icon = 'credit-card';
-                        color = '#10b981'; // Green because it's a positive action
-                    } else {
-                        // This is the debt account receiving payment
-                        isPositive = true; // Debt going down is positive!
-                        description = `Payment from ${otherName}`;
-                        icon = 'credit-card';
-                        color = '#10b981';
-                    }
-                } else {
-                    // Unknown type, skip
-                    return;
-                }
-
-                history.push({
-                    date: t.date,
-                    type: 'transaction',
-                    description: description,
-                    amount: t.amount,
-                    icon: icon,
-                    color: color,
-                    isPositive: isPositive
-                });
-            }
-        });
-
-        // Sort by date descending
-        history.sort((a, b) => new Date(b.date) - new Date(a.date));
-
-        if (history.length === 0) {
-            historyEl.innerHTML = '<div class="empty-state"><p>No transaction history yet</p></div>';
-        } else {
-            historyEl.innerHTML = history.slice(0, 30).map(h => `
-                <div class="history-item">
-                    <div class="history-icon" style="background: ${h.color}20; color: ${h.color}">
-                        <i class="fas fa-${h.icon}"></i>
-                    </div>
-                    <div class="history-details">
-                        <span class="history-description">${this.escapeHtml(h.description)}</span>
-                        <span class="history-date">${new Date(h.date).toLocaleDateString()}</span>
-                    </div>
-                    <span class="history-amount ${h.isPositive ? 'positive' : ''}">${h.isPositive ? '+' : '-'}${this.formatCurrency(h.amount)}</span>
-                </div>
-            `).join('');
-        }
-
-        this.openModal('account-details-modal');
-    }
-
-    formatAccountType(category) {
-        const types = {
-            'checking': 'Checking Account',
-            'savings': 'Savings Account',
-            'cash': 'Cash',
-            'brokerage': 'Brokerage Account',
-            'crypto': 'Cryptocurrency',
-            '401k': '401(k)',
-            '403b': '403(b)',
-            'ira': 'Traditional IRA',
-            'roth-ira': 'Roth IRA',
-            'pension': 'Pension',
-            'hsa': 'HSA',
-            'fsa': 'FSA',
-            '529': '529 College Savings',
-            'property': 'Property/Real Estate',
-            'vehicles': 'Vehicles',
-            'other-asset': 'Other Assets',
-            'credit-card': 'Credit Card',
-            'auto-loan': 'Auto Loan',
-            'personal-loan': 'Personal Loan',
-            'student-loan': 'Student Loan',
-            'mortgage': 'Mortgage',
-            'heloc': 'HELOC',
-            'other-debt': 'Other Debt',
-            // Legacy categories
-            'cash': 'Cash & Bank',
-            'investments': 'Investments',
-            'retirement': 'Retirement',
-            'credit-cards': 'Credit Cards',
-            'loans': 'Loans',
-            'other-liability': 'Other'
-        };
-        return types[category] || category;
+        this.openModal('asset-modal');
     }
 
     deleteAsset(id) {
         this.data.assets = this.data.assets.filter(a => a.id !== id);
         this.recordNetworthSnapshot();
         this.saveData();
-        this.renderNetWorth();
+        this.renderAccounts();
         this.renderDashboard();
         this.showToast('Deleted successfully', 'success');
     }
 
+    toggleAccountFields() {
+        const category = document.getElementById('asset-category-select').value;
+        const isLiability = document.getElementById('asset-liability').checked;
+        document.getElementById('account-fields').style.display = ['checking','savings','brokerage','401k','403b','ira','roth-ira','hsa','pension','crypto','529','fsa'].includes(category) ? 'block' : 'none';
+        document.getElementById('retirement-fields').style.display = ['401k','403b','ira','roth-ira','pension','hsa','529'].includes(category) ? 'block' : 'none';
+        document.getElementById('debt-fields').style.display = isLiability ? 'block' : 'none';
+        const clg = document.getElementById('credit-limit-group');
+        if (clg) clg.style.display = (isLiability && category === 'credit-card') ? 'block' : 'none';
+    }
+
     recordNetworthSnapshot() {
-        const totalAssets = this.data.assets
-            .filter(a => a.type === 'asset')
-            .reduce((sum, a) => sum + a.value, 0);
-
-        const totalLiabilities = this.data.assets
-            .filter(a => a.type === 'liability')
-            .reduce((sum, a) => sum + a.value, 0);
-
+        const totalAssets = this.data.assets.filter(a => a.type === 'asset').reduce((s, a) => s + a.value, 0);
+        const totalLiabilities = this.data.assets.filter(a => a.type === 'liability').reduce((s, a) => s + a.value, 0);
         const today = new Date().toISOString().split('T')[0];
-
-        // Remove any existing entry for today
         this.data.networthHistory = this.data.networthHistory.filter(h => h.date !== today);
-
-        // Add new snapshot
-        this.data.networthHistory.push({
-            date: today,
-            assets: totalAssets,
-            liabilities: totalLiabilities,
-            networth: totalAssets - totalLiabilities
-        });
-
-        // Keep only last 365 days
-        const oneYearAgo = new Date();
-        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-        this.data.networthHistory = this.data.networthHistory.filter(
-            h => new Date(h.date) >= oneYearAgo
-        );
+        this.data.networthHistory.push({ date: today, assets: totalAssets, liabilities: totalLiabilities, networth: totalAssets - totalLiabilities });
+        const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+        this.data.networthHistory = this.data.networthHistory.filter(h => new Date(h.date) >= oneYearAgo);
     }
 
-    renderNetWorth() {
-        const totalAssets = this.data.assets
-            .filter(a => a.type === 'asset')
-            .reduce((sum, a) => sum + a.value, 0);
-
-        const totalLiabilities = this.data.assets
-            .filter(a => a.type === 'liability')
-            .reduce((sum, a) => sum + a.value, 0);
-
-        const networth = totalAssets - totalLiabilities;
-
-        document.getElementById('total-assets').textContent = this.formatCurrency(totalAssets);
-        document.getElementById('total-liabilities').textContent = this.formatCurrency(totalLiabilities);
-
-        const networthEl = document.getElementById('networth-value');
-        networthEl.textContent = this.formatCurrency(networth);
-        networthEl.classList.toggle('positive', networth >= 0);
-        networthEl.classList.toggle('negative', networth < 0);
-
-        // Render assets list
-        const assetsList = document.getElementById('assets-list');
-        const assets = this.data.assets.filter(a => a.type === 'asset');
-
-        if (assets.length === 0) {
-            assetsList.innerHTML = '<div class="empty-state"><p>No assets added yet</p></div>';
-        } else {
-            assetsList.innerHTML = assets.map(a => {
-                const institutionText = a.institution ? ` &bull; ${this.escapeHtml(a.institution)}` : '';
-                const accountText = a.accountLast4 ? ` (****${this.escapeHtml(a.accountLast4)})` : '';
-
-                // Build YTD contribution progress for retirement accounts
-                let contributionProgress = '';
-                if (a.contributionLimit && a.contributionLimit > 0) {
-                    const ytd = a.ytdContribution || 0;
-                    const percentage = Math.min((ytd / a.contributionLimit) * 100, 100);
-                    contributionProgress = `
-                        <div class="asset-contribution-progress">
-                            <div class="contribution-progress-bar">
-                                <div class="contribution-progress-fill" style="width: ${percentage}%"></div>
-                            </div>
-                            <span class="contribution-text">${this.formatCurrency(ytd)} / ${this.formatCurrency(a.contributionLimit)}</span>
-                        </div>
-                    `;
-                }
-
-                return `
-                    <div class="asset-item">
-                        <div class="asset-info" onclick="app.openAccountDetails('${a.id}')" style="cursor: pointer;">
-                            <span class="asset-name">${this.escapeHtml(a.name)}${institutionText}${accountText}</span>
-                            <span class="asset-category">${this.formatAccountType(a.category)}</span>
-                            ${contributionProgress}
-                        </div>
-                        <span class="asset-value">${this.formatCurrency(a.value)}</span>
-                        <div class="asset-actions">
-                            <button class="btn-action btn-contribute" onclick="app.openContributionModal('${a.id}')" title="Add Contribution" aria-label="Add contribution">
-                                <i class="fas fa-plus"></i> Add
-                            </button>
-                            <button class="btn-action btn-withdraw" onclick="app.openWithdrawalModal('${a.id}')" title="Withdraw" aria-label="Withdraw funds">
-                                <i class="fas fa-minus"></i>
-                            </button>
-                            <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit" aria-label="Edit asset">
-                                <i class="fas fa-edit"></i>
-                            </button>
-                            <button class="btn-icon delete" onclick="app.confirmAction('Delete Asset', 'Are you sure you want to delete this asset?', () => app.deleteAsset('${a.id}'))" title="Delete" aria-label="Delete asset">
-                                <i class="fas fa-trash"></i>
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }).join('');
+    calculatePayoffDate(debt) {
+        if (!debt.interestRate || !debt.minPayment || debt.minPayment <= 0) return null;
+        let balance = debt.value;
+        const monthlyRate = debt.interestRate / 100 / 12;
+        let months = 0;
+        while (balance > 0 && months < 360) {
+            const interest = balance * monthlyRate;
+            const principal = debt.minPayment - interest;
+            if (principal <= 0) return null;
+            balance -= principal;
+            months++;
         }
-
-        // Render liabilities list
-        const liabilitiesList = document.getElementById('liabilities-list');
-        const liabilities = this.data.assets.filter(a => a.type === 'liability');
-
-        if (liabilities.length === 0) {
-            liabilitiesList.innerHTML = '<div class="empty-state"><p>No liabilities added yet</p></div>';
-        } else {
-            liabilitiesList.innerHTML = liabilities.map(a => {
-                const payoffDate = this.calculatePayoffDate(a);
-                const payoffText = payoffDate
-                    ? `Payoff: <span class="payoff-date">${payoffDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}</span>`
-                    : (a.interestRate ? 'Add min payment to see payoff' : '');
-                const rateText = a.interestRate ? ` @ ${a.interestRate}%` : '';
-                const institutionText = a.institution ? ` &bull; ${this.escapeHtml(a.institution)}` : '';
-
-                // Credit utilization for credit cards
-                let utilizationBar = '';
-                if (a.creditLimit && a.creditLimit > 0) {
-                    const utilization = Math.min((a.value / a.creditLimit) * 100, 100);
-                    const utilizationClass = utilization > 30 ? 'high' : 'low';
-                    utilizationBar = `
-                        <div class="credit-utilization">
-                            <div class="utilization-bar">
-                                <div class="utilization-fill ${utilizationClass}" style="width: ${utilization}%"></div>
-                            </div>
-                            <span class="utilization-text">${utilization.toFixed(0)}% used</span>
-                        </div>
-                    `;
-                }
-
-                return `
-                    <div class="liability-item">
-                        <div class="liability-info" onclick="app.openAccountDetails('${a.id}')" style="cursor: pointer;">
-                            <span class="liability-name">${this.escapeHtml(a.name)}${institutionText}${rateText}</span>
-                            <span class="liability-category">${this.formatAccountType(a.category)}</span>
-                            ${utilizationBar}
-                            ${payoffText ? `<div class="debt-payoff-info">${payoffText}</div>` : ''}
-                        </div>
-                        <span class="liability-value">${this.formatCurrency(a.value)}</span>
-                        <div class="liability-actions">
-                            <button class="btn-action btn-payment" onclick="app.openPaymentModal('${a.id}')" title="Pay" aria-label="Make payment">
-                                <i class="fas fa-credit-card"></i> Pay
-                            </button>
-                            <button class="btn-icon" onclick="app.editAsset('${a.id}')" title="Edit" aria-label="Edit liability">
-                                <i class="fas fa-edit"></i>
-                            </button>
-                            <button class="btn-icon delete" onclick="app.confirmAction('Delete Liability', 'Are you sure you want to delete this liability?', () => app.deleteAsset('${a.id}'))" title="Delete" aria-label="Delete liability">
-                                <i class="fas fa-trash"></i>
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-        }
-
-        // Render net worth chart
-        this.renderNetworthChart();
-    }
-
-    formatAssetCategory(category) {
-        const names = {
-            'cash': 'Cash & Bank',
-            'investments': 'Investments',
-            'retirement': 'Retirement',
-            'property': 'Property',
-            'vehicles': 'Vehicles',
-            'other-asset': 'Other',
-            'credit-cards': 'Credit Cards',
-            'loans': 'Loans',
-            'mortgage': 'Mortgage',
-            'other-liability': 'Other'
-        };
-        return names[category] || category;
-    }
-
-    renderNetworthChart() {
-        const ctx = document.getElementById('networth-chart');
-        if (!ctx) return;
-
-        const history = this.data.networthHistory.slice(-12); // Last 12 data points
-
-        if (history.length < 2) {
-            if (this.charts.networth) {
-                this.charts.networth.destroy();
-                this.charts.networth = null;
-            }
-            ctx.parentElement.innerHTML = '<div class="empty-state"><p>Not enough data for chart. Update your assets regularly to see trends.</p></div>';
-            return;
-        }
-
-        const labels = history.map(h => new Date(h.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
-        const data = history.map(h => h.networth);
-
-        if (this.charts.networth) {
-            this.charts.networth.data.labels = labels;
-            this.charts.networth.data.datasets[0].data = data;
-            this.charts.networth.update();
-            return;
-        }
-
-        this.charts.networth = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels,
-                datasets: [{
-                    label: 'Net Worth',
-                    data,
-                    borderColor: '#6366f1',
-                    backgroundColor: 'rgba(99, 102, 241, 0.1)',
-                    fill: true,
-                    tension: 0.4
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: false,
-                        ticks: {
-                            callback: (value) => this.formatCurrency(value)
-                        }
-                    }
-                }
-            }
-        });
+        if (months >= 360) return null;
+        const d = new Date(); d.setMonth(d.getMonth() + months);
+        return d;
     }
 
     // ==========================================
-    // DASHBOARD
+    // UNIFIED ACCOUNT ACTION
     // ==========================================
 
-    renderDashboard() {
-        const now = new Date();
-        const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const lastOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    openAccountAction(assetId, actionType) {
+        const asset = this.data.assets.find(a => a.id === assetId);
+        if (!asset) return;
+        document.getElementById('action-asset-id').value = assetId;
+        document.getElementById('action-type').value = actionType;
+        document.getElementById('action-date').value = this.todayLocal();
+        document.getElementById('action-amount').value = '';
 
-        // Calculate monthly stats
-        const monthlyTransactions = this.data.transactions.filter(t => {
-            const date = new Date(t.date);
-            return date >= firstOfMonth && date <= lastOfMonth;
-        });
+        const infoEl = document.getElementById('action-info');
+        const amountLabel = document.getElementById('action-amount-label');
+        const accountLabel = document.getElementById('action-account-label');
+        const accountGroup = document.getElementById('action-account-group');
+        const splitEl = document.getElementById('action-payment-split');
+        const submitBtn = document.getElementById('action-submit-btn');
+        const accountSelect = document.getElementById('action-account');
 
-        const monthlyIncome = monthlyTransactions
-            .filter(t => t.type === 'income')
-            .reduce((sum, t) => sum + t.amount, 0);
+        const contribTypeGroup = document.getElementById('action-contrib-type-group');
+        const retTypes = ['401k', '403b', 'ira', 'roth-ira', 'pension', 'hsa', '529'];
+        const isRetirement = retTypes.includes(asset.category);
 
-        const monthlyExpenses = monthlyTransactions
-            .filter(t => t.type === 'expense')
-            .reduce((sum, t) => sum + t.amount, 0);
+        const envelopeAllocEl = document.getElementById('action-envelope-alloc');
 
-        const totalAssets = this.data.assets
-            .filter(a => a.type === 'asset')
-            .reduce((sum, a) => sum + a.value, 0);
+        if (actionType === 'contribute') {
+            document.getElementById('account-action-modal-title').textContent = 'Add Contribution';
+            infoEl.innerHTML = `<strong>${this.escapeHtml(asset.name)}</strong><br>Balance: ${this.formatCurrency(asset.value)}`;
+            amountLabel.textContent = 'Amount to Add';
+            accountLabel.textContent = 'Transfer From';
+            splitEl.style.display = 'none';
+            if (envelopeAllocEl) envelopeAllocEl.style.display = 'none';
+            submitBtn.textContent = 'Add Contribution';
+            const others = this.data.assets.filter(a => a.type === 'asset' && a.id !== assetId);
+            accountSelect.innerHTML = '<option value="">Cash / External</option>';
+            others.forEach(a => { accountSelect.innerHTML += `<option value="${this.escapeHtml(a.id)}">${this.escapeHtml(a.name)}</option>`; });
 
-        const totalLiabilities = this.data.assets
-            .filter(a => a.type === 'liability')
-            .reduce((sum, a) => sum + a.value, 0);
-
-        document.getElementById('monthly-income').textContent = '+' + this.formatCurrency(monthlyIncome);
-        document.getElementById('monthly-expenses').textContent = '-' + this.formatCurrency(monthlyExpenses);
-
-        const balance = monthlyIncome - monthlyExpenses;
-        const balanceEl = document.getElementById('monthly-balance');
-        balanceEl.textContent = this.formatCurrency(balance);
-        balanceEl.classList.toggle('positive', balance >= 0);
-        balanceEl.classList.toggle('negative', balance < 0);
-
-        const dashNetworth = totalAssets - totalLiabilities;
-        const dashNetworthEl = document.getElementById('total-networth');
-        dashNetworthEl.textContent = this.formatCurrency(dashNetworth);
-        dashNetworthEl.classList.toggle('positive', dashNetworth >= 0);
-        dashNetworthEl.classList.toggle('negative', dashNetworth < 0);
-
-        // Render budget overview
-        this.renderBudgetOverview();
-
-        // Render spending pie chart
-        this.renderSpendingPieChart(monthlyTransactions);
-
-        // Render recent transactions
-        this.renderRecentTransactions();
-
-        // Render upcoming recurring
-        this.renderUpcomingRecurring();
-    }
-
-    renderBudgetOverview() {
-        const container = document.getElementById('budget-bars');
-        const budgets = this.data.budgets.slice(0, 5); // Show top 5
-
-        if (budgets.length === 0) {
-            container.innerHTML = '<div class="empty-state"><p>No budgets set</p></div>';
-            return;
-        }
-
-        container.innerHTML = budgets.map(b => {
-            const category = this.getCategoryById(b.categoryId);
-            const spent = this.getBudgetSpending(b.categoryId);
-            const percentage = Math.min((spent / b.amount) * 100, 100);
-
-            let progressClass = 'under';
-            if (percentage >= 90) progressClass = 'over';
-            else if (percentage >= 75) progressClass = 'warning';
-
-            return `
-                <div class="budget-bar-item">
-                    <div class="budget-bar-header">
-                        <span class="budget-bar-name">${this.escapeHtml(category.name)}</span>
-                        <span class="budget-bar-amount">${this.formatCurrency(spent)} / ${this.formatCurrency(b.amount)}</span>
-                    </div>
-                    <div class="budget-bar-track">
-                        <div class="budget-bar-fill ${progressClass}" style="width: ${percentage}%"></div>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    renderSpendingPieChart(transactions) {
-        const ctx = document.getElementById('spending-pie-chart');
-        if (!ctx) return;
-
-        const expenses = transactions.filter(t => t.type === 'expense');
-
-        if (expenses.length === 0) {
-            if (this.charts.spendingPie) {
-                this.charts.spendingPie.destroy();
-                this.charts.spendingPie = null;
-            }
-            ctx.parentElement.innerHTML = '<canvas id="spending-pie-chart"></canvas><div class="empty-state" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"><p>No expenses this month</p></div>';
-            return;
-        }
-
-        // Group by category
-        const categoryTotals = {};
-        expenses.forEach(t => {
-            const cat = this.getCategoryById(t.categoryId);
-            if (!categoryTotals[t.categoryId]) {
-                categoryTotals[t.categoryId] = { name: cat.name, color: cat.color, total: 0 };
-            }
-            categoryTotals[t.categoryId].total += t.amount;
-        });
-
-        const labels = Object.values(categoryTotals).map(c => c.name);
-        const data = Object.values(categoryTotals).map(c => c.total);
-        const colors = Object.values(categoryTotals).map(c => c.color);
-
-        if (this.charts.spendingPie) {
-            this.charts.spendingPie.data.labels = labels;
-            this.charts.spendingPie.data.datasets[0].data = data;
-            this.charts.spendingPie.data.datasets[0].backgroundColor = colors;
-            this.charts.spendingPie.update();
-            return;
-        }
-
-        this.charts.spendingPie = new Chart(ctx, {
-            type: 'doughnut',
-            data: {
-                labels,
-                datasets: [{
-                    data,
-                    backgroundColor: colors,
-                    borderWidth: 0
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        position: 'right',
-                        labels: {
-                            boxWidth: 12,
-                            padding: 12
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    renderRecentTransactions() {
-        const container = document.getElementById('recent-transactions-list');
-        const recent = this.data.transactions
-            .sort((a, b) => new Date(b.date) - new Date(a.date))
-            .slice(0, 5);
-
-        if (recent.length === 0) {
-            container.innerHTML = '<div class="empty-state"><p>No transactions yet</p></div>';
-            return;
-        }
-
-        container.innerHTML = recent.map(t => {
-            const category = this.getCategoryById(t.categoryId);
-            const amountClass = t.type === 'income' ? 'income' : 'expense';
-            const amountPrefix = t.type === 'income' ? '+' : '-';
-
-            return `
-                <div class="transaction-item">
-                    <div class="transaction-icon" style="background: ${category.color}20; color: ${category.color}">
-                        <i class="fas fa-${t.type === 'income' ? 'arrow-down' : 'arrow-up'}"></i>
-                    </div>
-                    <div class="transaction-details">
-                        <div class="transaction-description">${this.escapeHtml(t.description)}</div>
-                        <div class="transaction-category">${this.escapeHtml(category.name)}</div>
-                    </div>
-                    <div class="transaction-amount ${amountClass}">${amountPrefix}${this.formatCurrency(t.amount)}</div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    renderUpcomingRecurring() {
-        const container = document.getElementById('upcoming-recurring-list');
-
-        const upcoming = this.data.recurring
-            .map(r => ({ ...r, nextDateObj: new Date(r.nextDate) }))
-            .sort((a, b) => a.nextDateObj - b.nextDateObj)
-            .slice(0, 5);
-
-        if (upcoming.length === 0) {
-            container.innerHTML = '<div class="empty-state"><p>No recurring transactions</p></div>';
-            return;
-        }
-
-        container.innerHTML = upcoming.map(r => {
-            const amountClass = r.type === 'income' ? 'income' : 'expense';
-            const amountPrefix = r.type === 'income' ? '+' : '-';
-            const daysUntil = Math.ceil((r.nextDateObj - new Date()) / (1000 * 60 * 60 * 24));
-            let dateText = r.nextDateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-
-            if (daysUntil === 0) dateText = 'Today';
-            else if (daysUntil === 1) dateText = 'Tomorrow';
-            else if (daysUntil < 0) dateText = 'Overdue';
-
-            return `
-                <div class="recurring-item">
-                    <div class="recurring-info">
-                        <div class="recurring-name">${this.escapeHtml(r.name)}</div>
-                        <div class="recurring-date">${dateText}</div>
-                    </div>
-                    <div class="recurring-amount ${amountClass}">${amountPrefix}${this.formatCurrency(r.amount)}</div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    // ==========================================
-    // REPORTS
-    // ==========================================
-
-    updateReports() {
-        this.renderReports();
-    }
-
-    getReportDateRange() {
-        const period = document.getElementById('report-period').value;
-        const now = new Date();
-        let start, end;
-
-        switch(period) {
-            case 'thisMonth':
-                start = new Date(now.getFullYear(), now.getMonth(), 1);
-                end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-                break;
-            case 'lastMonth':
-                start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-                end = new Date(now.getFullYear(), now.getMonth(), 0);
-                break;
-            case 'last3Months':
-                start = new Date(now.getFullYear(), now.getMonth() - 2, 1);
-                end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-                break;
-            case 'last6Months':
-                start = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-                end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-                break;
-            case 'thisYear':
-                start = new Date(now.getFullYear(), 0, 1);
-                end = new Date(now.getFullYear(), 11, 31);
-                break;
-            case 'allTime':
-                start = new Date(2000, 0, 1);
-                end = new Date(2100, 0, 1);
-                break;
-        }
-
-        return { start, end };
-    }
-
-    renderReports() {
-        const { start, end } = this.getReportDateRange();
-
-        const transactions = this.data.transactions.filter(t => {
-            const date = new Date(t.date);
-            return date >= start && date <= end;
-        });
-
-        this.renderIncomeExpenseChart(transactions, start, end);
-        this.renderExpenseBreakdownChart(transactions);
-        this.renderSpendingTrendChart(transactions, start, end);
-        this.renderSavingsChart(transactions, start, end);
-        this.renderCategoryStats(transactions);
-    }
-
-    renderIncomeExpenseChart(transactions, start, end) {
-        const ctx = document.getElementById('income-expense-chart');
-        if (!ctx) return;
-
-        // Group by month
-        const monthlyData = {};
-        transactions.forEach(t => {
-            const date = new Date(t.date);
-            const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-
-            if (!monthlyData[key]) {
-                monthlyData[key] = { income: 0, expense: 0 };
-            }
-
-            if (t.type === 'income') {
-                monthlyData[key].income += t.amount;
+            if (isRetirement) {
+                contribTypeGroup.style.display = 'block';
+                document.getElementById('contrib-pretax').checked = true;
+                accountGroup.style.display = 'none';
             } else {
-                monthlyData[key].expense += t.amount;
+                contribTypeGroup.style.display = 'none';
+                accountGroup.style.display = 'block';
             }
-        });
-
-        const labels = Object.keys(monthlyData).sort();
-        const incomeData = labels.map(k => monthlyData[k].income);
-        const expenseData = labels.map(k => monthlyData[k].expense);
-
-        const formattedLabels = labels.map(l => {
-            const [year, month] = l.split('-');
-            return new Date(year, month - 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-        });
-
-        if (this.charts.incomeExpense) {
-            this.charts.incomeExpense.data.labels = formattedLabels;
-            this.charts.incomeExpense.data.datasets[0].data = incomeData;
-            this.charts.incomeExpense.data.datasets[1].data = expenseData;
-            this.charts.incomeExpense.update();
-            return;
-        }
-
-        this.charts.incomeExpense = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: formattedLabels,
-                datasets: [
-                    {
-                        label: 'Income',
-                        data: incomeData,
-                        backgroundColor: '#10b981'
-                    },
-                    {
-                        label: 'Expenses',
-                        data: expenseData,
-                        backgroundColor: '#ef4444'
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: {
-                            callback: (value) => this.formatCurrency(value)
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    renderExpenseBreakdownChart(transactions) {
-        const ctx = document.getElementById('expense-breakdown-chart');
-        if (!ctx) return;
-
-        const expenses = transactions.filter(t => t.type === 'expense');
-
-        if (expenses.length === 0) {
-            return;
-        }
-
-        const categoryTotals = {};
-        expenses.forEach(t => {
-            const cat = this.getCategoryById(t.categoryId);
-            if (!categoryTotals[t.categoryId]) {
-                categoryTotals[t.categoryId] = { name: cat.name, color: cat.color, total: 0 };
-            }
-            categoryTotals[t.categoryId].total += t.amount;
-        });
-
-        const sorted = Object.values(categoryTotals).sort((a, b) => b.total - a.total);
-        const labels = sorted.map(c => c.name);
-        const data = sorted.map(c => c.total);
-        const colors = sorted.map(c => c.color);
-
-        if (this.charts.expenseBreakdown) {
-            this.charts.expenseBreakdown.data.labels = labels;
-            this.charts.expenseBreakdown.data.datasets[0].data = data;
-            this.charts.expenseBreakdown.data.datasets[0].backgroundColor = colors;
-            this.charts.expenseBreakdown.update();
-            return;
-        }
-
-        this.charts.expenseBreakdown = new Chart(ctx, {
-            type: 'pie',
-            data: {
-                labels,
-                datasets: [{
-                    data,
-                    backgroundColor: colors,
-                    borderWidth: 0
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        position: 'right',
-                        labels: {
-                            boxWidth: 12,
-                            padding: 8
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    renderSpendingTrendChart(transactions, start, end) {
-        const ctx = document.getElementById('spending-trend-chart');
-        if (!ctx) return;
-
-        const dailySpending = {};
-        transactions.filter(t => t.type === 'expense').forEach(t => {
-            if (!dailySpending[t.date]) {
-                dailySpending[t.date] = 0;
-            }
-            dailySpending[t.date] += t.amount;
-        });
-
-        const dates = Object.keys(dailySpending).sort();
-        const values = dates.map(d => dailySpending[d]);
-
-        // Calculate running average
-        const avgValues = values.map((v, i) => {
-            const startIdx = Math.max(0, i - 6);
-            const subset = values.slice(startIdx, i + 1);
-            return subset.reduce((a, b) => a + b, 0) / subset.length;
-        });
-
-        const labels = dates.map(d => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
-
-        if (this.charts.spendingTrend) {
-            this.charts.spendingTrend.data.labels = labels;
-            this.charts.spendingTrend.data.datasets[0].data = values;
-            this.charts.spendingTrend.data.datasets[1].data = avgValues;
-            this.charts.spendingTrend.update();
-            return;
-        }
-
-        this.charts.spendingTrend = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels,
-                datasets: [
-                    {
-                        label: 'Daily Spending',
-                        data: values,
-                        borderColor: '#ef4444',
-                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                        fill: true,
-                        tension: 0.1
-                    },
-                    {
-                        label: '7-Day Average',
-                        data: avgValues,
-                        borderColor: '#6366f1',
-                        borderDash: [5, 5],
-                        fill: false,
-                        tension: 0.4
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: {
-                            callback: (value) => this.formatCurrency(value)
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    renderSavingsChart(transactions, start, end) {
-        const ctx = document.getElementById('savings-chart');
-        if (!ctx) return;
-
-        const monthlyData = {};
-        transactions.forEach(t => {
-            const date = new Date(t.date);
-            const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-
-            if (!monthlyData[key]) {
-                monthlyData[key] = { income: 0, expense: 0 };
-            }
-
-            if (t.type === 'income') {
-                monthlyData[key].income += t.amount;
+        } else if (actionType === 'pay') {
+            contribTypeGroup.style.display = 'none';
+            const isCreditCard = asset.category === 'credit-card';
+            document.getElementById('account-action-modal-title').textContent = 'Make Payment';
+            if (isCreditCard) {
+                infoEl.innerHTML = `<strong>${this.escapeHtml(asset.name)}</strong><br>Balance: ${this.formatCurrency(asset.value)}`;
             } else {
-                monthlyData[key].expense += t.amount;
+                infoEl.innerHTML = `<strong>${this.escapeHtml(asset.name)}</strong><br>Balance: ${this.formatCurrency(asset.value)} &bull; Rate: ${asset.interestRate || 0}%`;
             }
-        });
+            amountLabel.textContent = 'Payment Amount';
+            accountLabel.textContent = 'Pay From';
+            accountGroup.style.display = 'block';
+            splitEl.style.display = isCreditCard ? 'none' : 'block';
+            submitBtn.textContent = 'Make Payment';
+            document.getElementById('action-amount').value = isCreditCard ? asset.value : (asset.minPayment || '');
+            const bankAccounts = this.data.assets.filter(a => a.type === 'asset');
+            accountSelect.innerHTML = '<option value="">Cash / External</option>';
+            bankAccounts.forEach(a => { accountSelect.innerHTML += `<option value="${this.escapeHtml(a.id)}">${this.escapeHtml(a.name)}</option>`; });
+            this.currentDebt = asset;
+            if (!isCreditCard) this.calculatePaymentSplit();
 
-        const labels = Object.keys(monthlyData).sort();
-        const savingsRate = labels.map(k => {
-            const data = monthlyData[k];
-            if (data.income === 0) return 0;
-            return ((data.income - data.expense) / data.income) * 100;
-        });
-
-        const formattedLabels = labels.map(l => {
-            const [year, month] = l.split('-');
-            return new Date(year, month - 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-        });
-
-        if (this.charts.savings) {
-            this.charts.savings.data.labels = formattedLabels;
-            this.charts.savings.data.datasets[0].data = savingsRate;
-            this.charts.savings.update();
-            return;
+            if (isCreditCard && this.data.envelopes.length) {
+                if (envelopeAllocEl) envelopeAllocEl.style.display = 'block';
+                this.buildPaymentEnvelopeAllocations();
+                this.updatePaymentUnallocated();
+            } else {
+                if (envelopeAllocEl) envelopeAllocEl.style.display = 'none';
+            }
+        } else if (actionType === 'withdraw') {
+            contribTypeGroup.style.display = 'none';
+            if (envelopeAllocEl) envelopeAllocEl.style.display = 'none';
+            document.getElementById('account-action-modal-title').textContent = 'Withdraw Funds';
+            infoEl.innerHTML = `<strong>${this.escapeHtml(asset.name)}</strong><br>Balance: ${this.formatCurrency(asset.value)}`;
+            amountLabel.textContent = 'Amount to Withdraw';
+            accountLabel.textContent = 'Deposit To';
+            accountGroup.style.display = 'block';
+            splitEl.style.display = 'none';
+            submitBtn.textContent = 'Withdraw';
+            const others = this.data.assets.filter(a => a.type === 'asset' && a.id !== assetId);
+            accountSelect.innerHTML = '<option value="">Cash / External</option>';
+            others.forEach(a => { accountSelect.innerHTML += `<option value="${this.escapeHtml(a.id)}">${this.escapeHtml(a.name)}</option>`; });
         }
+        this.openModal('account-action-modal');
+    }
 
-        this.charts.savings = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: formattedLabels,
-                datasets: [{
-                    label: 'Savings Rate %',
-                    data: savingsRate,
-                    borderColor: '#10b981',
-                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                    fill: true,
-                    tension: 0.4
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    y: {
-                        ticks: {
-                            callback: (value) => value + '%'
-                        }
+    calculatePaymentSplit() {
+        const actionType = document.getElementById('action-type')?.value;
+        if (actionType !== 'pay' || !this.currentDebt) return;
+        const payment = parseFloat(document.getElementById('action-amount').value) || 0;
+        const monthlyRate = (this.currentDebt.interestRate || 0) / 100 / 12;
+        const interest = this.currentDebt.value * monthlyRate;
+        const principal = Math.max(0, payment - interest);
+        document.getElementById('action-principal').textContent = this.formatCurrency(principal);
+        document.getElementById('action-interest').textContent = this.formatCurrency(interest);
+    }
+
+    buildPaymentEnvelopeAllocations() {
+        const container = document.getElementById('action-envelope-rows');
+        if (!container) return;
+        const envelopes = this.data.envelopes;
+        if (!envelopes.length) { container.innerHTML = '<p class="empty-state">No envelopes created yet.</p>'; return; }
+        container.innerHTML = envelopes.map(env => {
+            const balClass = env.balance < -0.005 ? 'negative' : 'positive';
+            return `<div class="paycheck-alloc-row">
+                <div class="paycheck-alloc-info"><span class="color-dot" style="background:${this.escapeHtml(env.color)}"></span><span class="alloc-name">${this.escapeHtml(env.name)}</span></div>
+                <span class="alloc-balance ${balClass}">${this.formatCurrency(env.balance)}</span>
+                <input type="number" id="pay-alloc-${this.escapeHtml(env.id)}" class="alloc-input" step="0.01" min="0" value="0">
+            </div>`;
+        }).join('');
+    }
+
+    updatePaymentUnallocated() {
+        const total = parseFloat(document.getElementById('action-amount')?.value) || 0;
+        let allocated = 0;
+        this.data.envelopes.forEach(env => {
+            const input = document.getElementById(`pay-alloc-${env.id}`);
+            if (input) allocated += parseFloat(input.value) || 0;
+        });
+        const el = document.getElementById('action-unallocated');
+        if (el) {
+            el.textContent = this.formatCurrency(total - allocated);
+            el.className = 'paycheck-unallocated-value' + ((total - allocated) < -0.005 ? ' negative' : '');
+        }
+    }
+
+    updateTransPaymentEnvelopes() {
+        const type = document.querySelector('input[name="trans-type"]:checked')?.value;
+        if (type !== 'payment') return;
+        const toId = document.getElementById('trans-to-account')?.value;
+        const asset = toId ? this.data.assets.find(a => a.id === toId) : null;
+        const isCreditCard = asset && asset.category === 'credit-card';
+        const allocEl = document.getElementById('trans-envelope-alloc');
+        if (!allocEl) return;
+        if (isCreditCard && this.data.envelopes.length) {
+            allocEl.style.display = 'block';
+            this.buildTransPaymentAllocations();
+            this.updateTransAllocUnallocated();
+        } else {
+            allocEl.style.display = 'none';
+        }
+    }
+
+    buildTransPaymentAllocations() {
+        const container = document.getElementById('trans-envelope-alloc-rows');
+        if (!container) return;
+        const envelopes = this.data.envelopes;
+        if (!envelopes.length) { container.innerHTML = '<p class="empty-state">No envelopes created yet.</p>'; return; }
+        container.innerHTML = envelopes.map(env => {
+            const balClass = env.balance < -0.005 ? 'negative' : 'positive';
+            return `<div class="paycheck-alloc-row">
+                <div class="paycheck-alloc-info"><span class="color-dot" style="background:${this.escapeHtml(env.color)}"></span><span class="alloc-name">${this.escapeHtml(env.name)}</span></div>
+                <span class="alloc-balance ${balClass}">${this.formatCurrency(env.balance)}</span>
+                <input type="number" id="trans-alloc-${this.escapeHtml(env.id)}" class="alloc-input" step="0.01" min="0" value="0">
+            </div>`;
+        }).join('');
+    }
+
+    updateTransAllocUnallocated() {
+        const total = parseFloat(document.getElementById('trans-amount')?.value) || 0;
+        let allocated = 0;
+        this.data.envelopes.forEach(env => {
+            const input = document.getElementById(`trans-alloc-${env.id}`);
+            if (input) allocated += parseFloat(input.value) || 0;
+        });
+        const el = document.getElementById('trans-alloc-unallocated');
+        if (el) {
+            el.textContent = this.formatCurrency(total - allocated);
+            el.className = 'paycheck-unallocated-value' + ((total - allocated) < -0.005 ? ' negative' : '');
+        }
+    }
+
+    saveAccountAction(event) {
+        event.preventDefault();
+        const assetId = document.getElementById('action-asset-id').value;
+        const actionType = document.getElementById('action-type').value;
+        const amount = parseFloat(document.getElementById('action-amount').value);
+        const accountId = document.getElementById('action-account').value || null;
+        const date = document.getElementById('action-date').value;
+        const asset = this.data.assets.find(a => a.id === assetId);
+        if (!asset) return;
+        if (!amount || amount <= 0) { this.showToast('Amount must be greater than 0', 'error'); return; }
+
+        if (actionType === 'contribute') {
+            const isPreTax = document.getElementById('contrib-pretax').checked;
+            const contribTypeGroup = document.getElementById('action-contrib-type-group');
+            const isRetirementContrib = contribTypeGroup.style.display !== 'none';
+
+            asset.value += amount;
+            asset.updatedAt = new Date().toISOString();
+
+            if (isRetirementContrib && isPreTax) {
+                // Pre-tax: company deducts from paycheck, only retirement account increases
+                if (!asset.contributions) asset.contributions = [];
+                asset.contributions.push({ id: this.generateId(), amount, date, type: 'pretax', createdAt: new Date().toISOString() });
+                const txn = { id: this.generateId(), type: 'transfer', amount, description: `Pre-tax contribution to ${asset.name}`, categoryId: null, date, notes: 'Pre-tax: deducted from paycheck by employer', fromAccountId: null, toAccountId: assetId, createdAt: new Date().toISOString() };
+                this.data.transactions.push(txn);
+            } else {
+                // Post-tax or non-retirement: transfer from bank account
+                if (accountId) { const from = this.data.assets.find(a => a.id === accountId); if (from) { from.value -= amount; from.updatedAt = new Date().toISOString(); } }
+                if (!asset.contributions) asset.contributions = [];
+                asset.contributions.push({ id: this.generateId(), amount, date, type: 'posttax', createdAt: new Date().toISOString() });
+                const txn = { id: this.generateId(), type: 'transfer', amount, description: `Contribution to ${asset.name}`, categoryId: null, date, notes: 'Post-tax contribution', fromAccountId: accountId, toAccountId: assetId, createdAt: new Date().toISOString() };
+                this.applyEnvelopeEffect(txn);
+                this.data.transactions.push(txn);
+            }
+
+            if (asset.ytdContribution !== undefined) asset.ytdContribution += amount;
+            this.showToast(`Added ${this.formatCurrency(amount)} to ${asset.name}`, 'success');
+
+        } else if (actionType === 'pay') {
+            if (amount > asset.value) { this.showToast('Payment exceeds debt balance', 'error'); return; }
+            const isCreditCard = asset.category === 'credit-card';
+            let principal, interest;
+            if (isCreditCard) {
+                principal = amount;
+                interest = 0;
+            } else {
+                const rate = asset.interestRate || 0;
+                const monthlyRate = rate / 100 / 12;
+                interest = asset.value * monthlyRate;
+                principal = Math.max(0, amount - interest);
+            }
+            asset.value = Math.max(0, asset.value - principal);
+            asset.updatedAt = new Date().toISOString();
+            if (accountId) { const from = this.data.assets.find(a => a.id === accountId); if (from) { from.value -= amount; from.updatedAt = new Date().toISOString(); } }
+            if (!asset.payments) asset.payments = [];
+            asset.payments.push({ id: this.generateId(), amount, principal, interest, date, balanceAfter: asset.value, createdAt: new Date().toISOString() });
+            const notes = isCreditCard ? '' : `Principal: ${this.formatCurrency(principal)}, Interest: ${this.formatCurrency(interest)}`;
+            const txn = { id: this.generateId(), type: 'payment', amount, description: `Payment to ${asset.name}`, categoryId: null, date, notes, fromAccountId: accountId, toAccountId: assetId, createdAt: new Date().toISOString() };
+            if (!isCreditCard) this.applyEnvelopeEffect(txn);
+            this.data.transactions.push(txn);
+
+            // Deduct from envelopes based on allocations (credit card payments)
+            if (isCreditCard) {
+                this.data.envelopes.forEach(env => {
+                    const input = document.getElementById(`pay-alloc-${env.id}`);
+                    const alloc = input ? (parseFloat(input.value) || 0) : 0;
+                    if (alloc > 0) {
+                        env.balance -= alloc;
+                        env.spent += alloc;
                     }
-                }
+                });
             }
-        });
-    }
 
-    renderCategoryStats(transactions) {
-        const tbody = document.getElementById('category-stats-tbody');
-        const expenses = transactions.filter(t => t.type === 'expense');
+            if (asset.value === 0) this.showToast(`Congratulations! ${asset.name} is paid off!`, 'success');
+            else this.showToast(`Payment recorded. Remaining: ${this.formatCurrency(asset.value)}`, 'success');
 
-        if (expenses.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state"><p>No expense data for this period</p></div></td></tr>';
-            return;
+        } else if (actionType === 'withdraw') {
+            if (amount > asset.value) { this.showToast('Withdrawal exceeds account balance', 'error'); return; }
+            asset.value -= amount;
+            asset.updatedAt = new Date().toISOString();
+            if (accountId) { const to = this.data.assets.find(a => a.id === accountId); if (to) { to.value += amount; to.updatedAt = new Date().toISOString(); } }
+            if (!asset.withdrawals) asset.withdrawals = [];
+            asset.withdrawals.push({ id: this.generateId(), amount, date, createdAt: new Date().toISOString() });
+            const txn = { id: this.generateId(), type: accountId ? 'transfer' : 'income', amount, description: `Withdrawal from ${asset.name}`, categoryId: accountId ? null : 'other-income', date, notes: 'Auto-created from withdrawal', fromAccountId: assetId, toAccountId: accountId, createdAt: new Date().toISOString() };
+            this.data.transactions.push(txn);
+            this.showToast(`Withdrew ${this.formatCurrency(amount)} from ${asset.name}`, 'success');
         }
 
-        const totalExpenses = expenses.reduce((sum, t) => sum + t.amount, 0);
-
-        const categoryStats = {};
-        expenses.forEach(t => {
-            if (!categoryStats[t.categoryId]) {
-                const cat = this.getCategoryById(t.categoryId);
-                categoryStats[t.categoryId] = {
-                    name: cat.name,
-                    color: cat.color,
-                    total: 0,
-                    count: 0
-                };
-            }
-            categoryStats[t.categoryId].total += t.amount;
-            categoryStats[t.categoryId].count++;
-        });
-
-        const sorted = Object.values(categoryStats).sort((a, b) => b.total - a.total);
-
-        tbody.innerHTML = sorted.map(stat => `
-            <tr>
-                <td>
-                    <span style="display: inline-flex; align-items: center; gap: 8px;">
-                        <span style="width: 10px; height: 10px; border-radius: 50%; background: ${this.escapeHtml(stat.color)}"></span>
-                        ${this.escapeHtml(stat.name)}
-                    </span>
-                </td>
-                <td>${this.formatCurrency(stat.total)}</td>
-                <td>${stat.count}</td>
-                <td>${this.formatCurrency(stat.total / stat.count)}</td>
-                <td>${((stat.total / totalExpenses) * 100).toFixed(1)}%</td>
-            </tr>
-        `).join('');
-    }
-
-    // ==========================================
-    // SETTINGS
-    // ==========================================
-
-    renderSettings() {
-        const list = document.getElementById('categories-list');
-
-        list.innerHTML = this.data.categories.map(cat => `
-            <div class="category-item">
-                <span class="category-color" style="background: ${this.escapeHtml(cat.color)}"></span>
-                <span class="category-name">${this.escapeHtml(cat.name)}</span>
-                <span class="category-type ${this.escapeHtml(cat.type)}">${this.escapeHtml(cat.type)}</span>
-                <button class="btn-icon delete" onclick="app.deleteCategory('${this.escapeHtml(cat.id)}')" title="Delete" aria-label="Delete category">
-                    <i class="fas fa-trash"></i>
-                </button>
-            </div>
-        `).join('');
-    }
-
-    // ==========================================
-    // DATA MANAGEMENT
-    // ==========================================
-
-    exportData() {
-        const dataStr = JSON.stringify(this.data, null, 2);
-        const blob = new Blob([dataStr], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `financeflow-backup-${new Date().toISOString().split('T')[0]}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        this.showToast('Data exported successfully', 'success');
-    }
-
-    importData(event) {
-        const file = event.target.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            try {
-                const imported = JSON.parse(e.target.result);
-
-                // Validate structure
-                if (imported.transactions && imported.categories) {
-                    this.data = { ...this.data, ...imported };
-                    this.saveData();
-                    this.renderAll();
-                    this.showToast('Data imported successfully', 'success');
-                } else {
-                    this.showToast('Invalid file format', 'error');
-                }
-            } catch (error) {
-                this.showToast('Error reading file', 'error');
-            }
-        };
-        reader.readAsText(file);
-        event.target.value = '';
-    }
-
-    confirmClearData() {
-        document.getElementById('confirm-title').textContent = 'Clear All Data';
-        document.getElementById('confirm-message').textContent = 'Are you sure you want to delete all your financial data? This action cannot be undone.';
-        document.getElementById('confirm-action-btn').onclick = () => this.clearAllData();
-        this.openModal('confirm-dialog');
-    }
-
-    clearAllData() {
-        localStorage.removeItem('financeflow_data');
-        this.data = {
-            transactions: [],
-            budgets: [],
-            recurring: [],
-            assets: [],
-            networthHistory: [],
-            categories: [...this.defaultCategories],
-            envelopes: [],
-            incomeSources: [],
-            paycheckHistory: [],
-            settings: {
-                theme: 'light',
-                currency: '$'
-            }
-        };
+        this.currentDebt = null;
+        this.recordNetworthSnapshot();
         this.saveData();
-        this.closeModal('confirm-dialog');
-        this.renderAll();
-        this.showToast('All data cleared', 'success');
+        this.closeModal('account-action-modal');
+        this.renderAccounts();
+        this.renderDashboard();
     }
 
     // ==========================================
-    // ENVELOPE BUDGETING
+    // ACCOUNT DETAILS
     // ==========================================
 
-    getEnvelopeBalance(envelope) {
-        const accountTotal = Object.values(envelope.accountBalances || {}).reduce((sum, v) => sum + v, 0);
-        return accountTotal - (envelope.ccPending || 0);
-    }
+    openAccountDetails(assetId) {
+        const asset = this.data.assets.find(a => a.id === assetId);
+        if (!asset) return;
+        document.getElementById('account-details-title').textContent = asset.name;
 
-    getEnvelopePerPaycheckTarget(envelope) {
-        const amount = envelope.targetAmount || 0;
-        switch (envelope.targetFrequency) {
-            case 'weekly': return amount * 52 / 26;
-            case 'biweekly': return amount;
-            case 'monthly': return amount * 12 / 26;
-            case 'quarterly': return amount * 4 / 26;
-            case 'yearly': return amount / 26;
-            default: return amount * 12 / 26;
+        let summaryHtml = `<div class="summary-item"><span class="label">Current Value</span><span class="value ${asset.type === 'asset' ? 'positive' : 'negative'}">${this.formatCurrency(asset.value)}</span></div>
+            <div class="summary-item"><span class="label">Account Type</span><span class="value">${this.formatAccountType(asset.category)}</span></div>`;
+        if (asset.institution) summaryHtml += `<div class="summary-item"><span class="label">Institution</span><span class="value">${this.escapeHtml(asset.institution)}</span></div>`;
+        if (asset.accountLast4) summaryHtml += `<div class="summary-item"><span class="label">Account #</span><span class="value">****${this.escapeHtml(asset.accountLast4)}</span></div>`;
+        if (asset.contributionLimit) {
+            const ytd = asset.ytdContribution || 0;
+            const pct = (ytd / asset.contributionLimit) * 100;
+            summaryHtml += `<div class="summary-item full-width"><span class="label">YTD Contributions</span><span class="value">${this.formatCurrency(ytd)} / ${this.formatCurrency(asset.contributionLimit)}</span><div class="contribution-progress-bar"><div class="contribution-progress-fill" style="width:${Math.min(pct,100)}%"></div></div></div>`;
         }
+        if (asset.creditLimit) {
+            const util = (asset.value / asset.creditLimit) * 100;
+            summaryHtml += `<div class="summary-item"><span class="label">Credit Limit</span><span class="value">${this.formatCurrency(asset.creditLimit)}</span></div><div class="summary-item"><span class="label">Utilization</span><span class="value ${util > 30 ? 'negative' : 'positive'}">${util.toFixed(1)}%</span></div>`;
+        }
+        if (asset.type === 'liability' && asset.originalAmount) {
+            const paidOff = asset.originalAmount - asset.value;
+            summaryHtml += `<div class="summary-item"><span class="label">Original Amount</span><span class="value">${this.formatCurrency(asset.originalAmount)}</span></div><div class="summary-item"><span class="label">Paid Off</span><span class="value positive">${((paidOff / asset.originalAmount) * 100).toFixed(1)}%</span></div>`;
+        }
+        document.getElementById('account-summary').innerHTML = summaryHtml;
+
+        const actionsEl = document.getElementById('account-actions');
+        if (asset.type === 'asset') {
+            actionsEl.innerHTML = `<button class="btn-primary" data-action="account-contribute" data-id="${asset.id}"><i class="fas fa-plus"></i> Add</button>
+                <button class="btn-secondary btn-withdraw" data-action="account-withdraw" data-id="${asset.id}"><i class="fas fa-minus"></i> Withdraw</button>`;
+        } else {
+            actionsEl.innerHTML = `<button class="btn-primary" data-action="account-pay" data-id="${asset.id}"><i class="fas fa-credit-card"></i> Pay</button>`;
+        }
+        // Wire up detail modal action buttons to close this modal first
+        actionsEl.querySelectorAll('[data-action]').forEach(btn => {
+            btn.addEventListener('click', () => this.closeModal('account-details-modal'));
+        });
+
+        // Transaction history
+        let history = [];
+        this.data.transactions.forEach(t => {
+            const isFrom = t.fromAccountId === asset.id;
+            const isTo = t.toAccountId === asset.id;
+            if (!isFrom && !isTo) return;
+            let isPositive, icon, color, description;
+            if (t.type === 'expense') { isPositive = false; icon = 'shopping-cart'; color = '#ef4444'; description = t.description; }
+            else if (t.type === 'income') { isPositive = true; icon = 'arrow-down'; color = '#10b981'; description = t.description; }
+            else if (t.type === 'transfer') {
+                const otherId = isFrom ? t.toAccountId : t.fromAccountId;
+                const other = this.data.assets.find(a => a.id === otherId);
+                isPositive = !isFrom; icon = 'exchange-alt'; color = '#6366f1';
+                description = isFrom ? `Transfer to ${other?.name || 'External'}` : `Transfer from ${other?.name || 'External'}`;
+            } else if (t.type === 'payment') {
+                const otherId = isFrom ? t.toAccountId : t.fromAccountId;
+                const other = this.data.assets.find(a => a.id === otherId);
+                isPositive = !isFrom; icon = 'credit-card'; color = '#10b981';
+                description = isFrom ? `Payment to ${other?.name || 'External'}` : `Payment from ${other?.name || 'External'}`;
+            } else return;
+            history.push({ date: t.date, description, amount: t.amount, icon, color, isPositive });
+        });
+        history.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        const historyEl = document.getElementById('account-history');
+        if (!history.length) historyEl.innerHTML = '<div class="empty-state"><p>No transaction history yet</p></div>';
+        else historyEl.innerHTML = history.slice(0, 30).map(h => `
+            <div class="history-item">
+                <div class="history-icon" style="background:${h.color}20;color:${h.color}"><i class="fas fa-${h.icon}"></i></div>
+                <div class="history-details"><span class="history-description">${this.escapeHtml(h.description)}</span><span class="history-date">${this.formatDateLocal(h.date)}</span></div>
+                <span class="history-amount ${h.isPositive ? 'positive' : ''}">${h.isPositive ? '+' : '-'}${this.formatCurrency(h.amount)}</span>
+            </div>`).join('');
+        this.openModal('account-details-modal');
     }
 
-    getOverdrawnEnvelopes() {
-        return (this.data.envelopes || []).filter(e => this.getEnvelopeBalance(e) < -0.005);
-    }
-
-    populateEnvelopeCategoryDropdown() {
-        const select = document.getElementById('envelope-category');
-        if (!select) return;
-        select.innerHTML = '<option value="">None (manual only)</option>';
-        const linkedIds = (this.data.envelopes || []).map(e => e.linkedCategoryId).filter(Boolean);
-        const editingId = document.getElementById('envelope-id').value;
-        const editingEnv = editingId ? (this.data.envelopes || []).find(e => e.id === editingId) : null;
-
-        this.data.categories
-            .filter(c => c.type === 'expense' && (!linkedIds.includes(c.id) || (editingEnv && editingEnv.linkedCategoryId === c.id)))
-            .forEach(cat => {
-                select.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`;
-            });
-    }
+    // ==========================================
+    // ENVELOPES
+    // ==========================================
 
     saveEnvelope(event) {
         event.preventDefault();
-        const id = document.getElementById('envelope-id').value || Date.now().toString();
+        const id = document.getElementById('envelope-id').value || this.generateId();
         const name = document.getElementById('envelope-name').value.trim();
         const linkedCategoryId = document.getElementById('envelope-category').value || null;
         const targetAmount = parseFloat(document.getElementById('envelope-target').value) || 0;
         const targetFrequency = document.getElementById('envelope-frequency').value;
         const color = document.getElementById('envelope-color').value;
+        if (!name) { this.showToast('Envelope name is required', 'error'); return; }
 
-        if (!name) {
-            this.showToast('Envelope name is required', 'error');
-            return;
-        }
-        if (targetAmount < 0) {
-            this.showToast('Target amount cannot be negative', 'error');
-            return;
-        }
-
-        if (!this.data.envelopes) this.data.envelopes = [];
-        const existingIndex = this.data.envelopes.findIndex(e => e.id === id);
-
-        const envelope = existingIndex > -1 ? { ...this.data.envelopes[existingIndex] } : {
-            id,
-            accountBalances: {},
-            ccPending: 0,
-            createdAt: new Date().toISOString()
+        const idx = this.data.envelopes.findIndex(e => e.id === id);
+        const envelope = idx > -1 ? { ...this.data.envelopes[idx] } : {
+            id, balance: 0, spent: 0, lastResetDate: new Date().toISOString().split('T')[0], createdAt: new Date().toISOString()
         };
+        Object.assign(envelope, { name, linkedCategoryId, linkedAccountId: null, targetAmount, targetFrequency, color });
 
-        envelope.name = name;
-        envelope.linkedCategoryId = linkedCategoryId;
-        envelope.targetAmount = targetAmount;
-        envelope.targetFrequency = targetFrequency;
-        envelope.color = color;
-
-        if (existingIndex > -1) {
-            this.data.envelopes[existingIndex] = envelope;
-            this.showToast('Envelope updated', 'success');
-        } else {
-            this.data.envelopes.push(envelope);
-            this.showToast('Envelope created', 'success');
-        }
-
+        if (idx > -1) { this.data.envelopes[idx] = envelope; this.showToast('Envelope updated', 'success'); }
+        else { this.data.envelopes.push(envelope); this.showToast('Envelope created', 'success'); }
         this.saveData();
         this.closeModal('envelope-modal');
         this.renderEnvelopes();
     }
 
     editEnvelope(id) {
-        const envelope = (this.data.envelopes || []).find(e => e.id === id);
-        if (!envelope) return;
-
-        document.getElementById('envelope-id').value = envelope.id;
-        document.getElementById('envelope-name').value = envelope.name;
-        document.getElementById('envelope-target').value = envelope.targetAmount || '';
-        document.getElementById('envelope-frequency').value = envelope.targetFrequency || 'monthly';
-        document.getElementById('envelope-color').value = envelope.color || '#6366f1';
-
+        const env = this.data.envelopes.find(e => e.id === id);
+        if (!env) return;
+        document.getElementById('envelope-id').value = env.id;
+        document.getElementById('envelope-name').value = env.name;
+        document.getElementById('envelope-target').value = env.targetAmount || '';
+        document.getElementById('envelope-frequency').value = env.targetFrequency || 'monthly';
+        document.getElementById('envelope-color').value = env.color || '#6366f1';
         this.openModal('envelope-modal');
-
-        // Set linked category after dropdown is populated
         setTimeout(() => {
-            document.getElementById('envelope-category').value = envelope.linkedCategoryId || '';
+            if (env.linkedCategoryId) document.getElementById('envelope-category').value = env.linkedCategoryId;
         }, 50);
     }
 
     deleteEnvelope(id) {
-        this.confirmAction('Delete Envelope', 'Are you sure you want to delete this envelope? Allocated funds data will be lost.', () => {
-            this.data.envelopes = (this.data.envelopes || []).filter(e => e.id !== id);
-            this.saveData();
-            this.renderEnvelopes();
-            this.showToast('Envelope deleted', 'success');
-        });
+        this.data.envelopes = this.data.envelopes.filter(e => e.id !== id);
+        this.saveData();
+        this.renderEnvelopes();
+        this.showToast('Envelope deleted', 'success');
     }
 
-    // Income Source CRUD
+    populateEnvelopeLinkDropdowns() {
+        const catSelect = document.getElementById('envelope-category');
+        if (catSelect) {
+            catSelect.innerHTML = '<option value="">None</option>';
+            this.data.categories.filter(c => c.type === 'expense')
+                .forEach(cat => { catSelect.innerHTML += `<option value="${this.escapeHtml(cat.id)}">${this.escapeHtml(cat.name)}</option>`; });
+        }
+    }
+
+    onEnvelopeLinkTypeChange() {}
+
+    getEnvelopeCCSpent(envelopeId) {
+        const ccIds = new Set(this.data.assets.filter(a => a.category === 'credit-card').map(a => a.id));
+        if (!ccIds.size) return 0;
+        const now = new Date();
+        const cm = now.getMonth(), cy = now.getFullYear();
+        return this.data.transactions.filter(t => {
+            if (t.envelopeId !== envelopeId) return false;
+            if (t.type !== 'expense') return false;
+            if (!t.fromAccountId || !ccIds.has(t.fromAccountId)) return false;
+            const d = this.parseDateLocal(t.date);
+            return d.getMonth() === cm && d.getFullYear() === cy;
+        }).reduce((sum, t) => sum + t.amount, 0);
+    }
+
+    getEnvelopeMonthlyTarget(env) {
+        const a = env.targetAmount || 0;
+        const f = { weekly: 52/12, biweekly: 26/12, monthly: 1, quarterly: 1/3, yearly: 1/12 };
+        return a * (f[env.targetFrequency] || 1);
+    }
+
+    getEnvelopePerPaycheckTarget(env) {
+        const a = env.targetAmount || 0;
+        const f = { weekly: 52/26, biweekly: 1, monthly: 12/26, quarterly: 4/26, yearly: 1/26 };
+        return a * (f[env.targetFrequency] || 12/26);
+    }
+
+    // ==========================================
+    // INCOME SOURCES
+    // ==========================================
 
     saveIncomeSource(event) {
         event.preventDefault();
-        const id = document.getElementById('income-source-id').value || Date.now().toString();
+        const id = document.getElementById('income-source-id').value || this.generateId();
         const name = document.getElementById('income-source-name').value.trim();
         const defaultAccountId = document.getElementById('income-source-account').value || null;
-
-        if (!name) {
-            this.showToast('Income source name is required', 'error');
-            return;
-        }
-
-        if (!this.data.incomeSources) this.data.incomeSources = [];
-        const existingIndex = this.data.incomeSources.findIndex(s => s.id === id);
-
-        const source = existingIndex > -1 ? { ...this.data.incomeSources[existingIndex] } : {
-            id,
-            allocationTemplate: {},
-            createdAt: new Date().toISOString()
-        };
-
+        if (!name) { this.showToast('Income source name is required', 'error'); return; }
+        const idx = this.data.incomeSources.findIndex(s => s.id === id);
+        const source = idx > -1 ? { ...this.data.incomeSources[idx] } : { id, allocationTemplate: {}, createdAt: new Date().toISOString() };
         source.name = name;
         source.defaultAccountId = defaultAccountId;
-
-        if (existingIndex > -1) {
-            this.data.incomeSources[existingIndex] = source;
-            this.showToast('Income source updated', 'success');
-        } else {
-            this.data.incomeSources.push(source);
-            this.showToast('Income source added', 'success');
-        }
-
+        if (idx > -1) { this.data.incomeSources[idx] = source; this.showToast('Income source updated', 'success'); }
+        else { this.data.incomeSources.push(source); this.showToast('Income source added', 'success'); }
         this.saveData();
         this.closeModal('income-source-modal');
         this.renderEnvelopes();
     }
 
     editIncomeSource(id) {
-        const source = (this.data.incomeSources || []).find(s => s.id === id);
-        if (!source) return;
-
-        document.getElementById('income-source-id').value = source.id;
-        document.getElementById('income-source-name').value = source.name;
-
+        const s = this.data.incomeSources.find(s => s.id === id);
+        if (!s) return;
+        document.getElementById('income-source-id').value = s.id;
+        document.getElementById('income-source-name').value = s.name;
         this.openModal('income-source-modal');
-
         setTimeout(() => {
             this.populateIncomeSourceAccountDropdown();
-            document.getElementById('income-source-account').value = source.defaultAccountId || '';
+            document.getElementById('income-source-account').value = s.defaultAccountId || '';
         }, 50);
     }
 
     deleteIncomeSource(id) {
-        this.confirmAction('Delete Income Source', 'Are you sure? Allocation templates for this source will be lost.', () => {
-            this.data.incomeSources = (this.data.incomeSources || []).filter(s => s.id !== id);
-            this.saveData();
-            this.renderEnvelopes();
-            this.showToast('Income source deleted', 'success');
-        });
+        this.data.incomeSources = this.data.incomeSources.filter(s => s.id !== id);
+        this.saveData();
+        this.renderEnvelopes();
+        this.showToast('Income source deleted', 'success');
     }
 
     populateIncomeSourceAccountDropdown() {
@@ -3545,120 +2008,73 @@ class FinanceApp {
         this.buildAccountOptionsHtml(select);
     }
 
-    buildAccountOptionsHtml(select, defaultLabel) {
+    buildAccountOptionsHtml(select) {
         const assets = this.data.assets.filter(a => a.type === 'asset');
-        const liabilities = this.data.assets.filter(a => a.type === 'liability');
-
-        if (assets.length > 0) {
+        if (assets.length) {
             let html = '<optgroup label="Bank & Investment Accounts">';
-            assets.forEach(a => {
-                const displayName = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
-                html += `<option value="${this.escapeHtml(a.id)}">${displayName}</option>`;
-            });
-            html += '</optgroup>';
-            select.innerHTML += html;
-        }
-
-        if (liabilities.length > 0) {
-            let html = '<optgroup label="Credit Cards & Loans">';
-            liabilities.forEach(a => {
-                const displayName = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name);
-                html += `<option value="${this.escapeHtml(a.id)}">${displayName}</option>`;
-            });
-            html += '</optgroup>';
-            select.innerHTML += html;
+            assets.forEach(a => { const dn = a.institution ? `${this.escapeHtml(a.name)} (${this.escapeHtml(a.institution)})` : this.escapeHtml(a.name); html += `<option value="${this.escapeHtml(a.id)}">${dn}</option>`; });
+            select.innerHTML += html + '</optgroup>';
         }
     }
 
-    // Paycheck flow
+    // ==========================================
+    // PAYCHECK
+    // ==========================================
 
     populatePaycheckModal() {
-        // Populate income source dropdown
         const sourceSelect = document.getElementById('paycheck-source');
         sourceSelect.innerHTML = '<option value="">Select income source...</option>';
-        (this.data.incomeSources || []).forEach(s => {
-            sourceSelect.innerHTML += `<option value="${this.escapeHtml(s.id)}">${this.escapeHtml(s.name)}</option>`;
-        });
-
-        // Populate deposit account dropdown
+        this.data.incomeSources.forEach(s => { sourceSelect.innerHTML += `<option value="${this.escapeHtml(s.id)}">${this.escapeHtml(s.name)}</option>`; });
         const accountSelect = document.getElementById('paycheck-account');
         accountSelect.innerHTML = '<option value="">Select deposit account...</option>';
         this.buildAccountOptionsHtml(accountSelect);
-
-        // Set date to today
-        document.getElementById('paycheck-date').valueAsDate = new Date();
-
-        // Build allocation table
+        document.getElementById('paycheck-date').value = this.todayLocal();
         this.buildPaycheckAllocationTable();
         this.updatePaycheckUnallocated();
     }
 
     onPaycheckSourceChange() {
         const sourceId = document.getElementById('paycheck-source').value;
-        const source = sourceId ? (this.data.incomeSources || []).find(s => s.id === sourceId) : null;
-
-        // Set default account
-        if (source && source.defaultAccountId) {
-            document.getElementById('paycheck-account').value = source.defaultAccountId;
-        }
-
-        // Pre-fill allocations from template or per-paycheck targets
-        const envelopes = this.data.envelopes || [];
-        envelopes.forEach(env => {
+        const source = sourceId ? this.data.incomeSources.find(s => s.id === sourceId) : null;
+        if (source?.defaultAccountId) document.getElementById('paycheck-account').value = source.defaultAccountId;
+        this.data.envelopes.forEach(env => {
             const input = document.getElementById(`paycheck-alloc-${env.id}`);
             if (!input) return;
-            if (source && source.allocationTemplate && source.allocationTemplate[env.id] !== undefined) {
+            if (source?.allocationTemplate?.[env.id] !== undefined) {
                 input.value = source.allocationTemplate[env.id];
             } else {
                 input.value = this.getEnvelopePerPaycheckTarget(env).toFixed(2);
             }
         });
-
         this.updatePaycheckUnallocated();
     }
 
     buildPaycheckAllocationTable() {
         const container = document.getElementById('paycheck-allocations');
-        const envelopes = this.data.envelopes || [];
-
-        if (envelopes.length === 0) {
-            container.innerHTML = '<p class="empty-state">No envelopes created yet. Create envelopes first.</p>';
-            return;
-        }
-
-        let html = '';
-        envelopes.forEach(env => {
-            const balance = this.getEnvelopeBalance(env);
+        const envelopes = this.data.envelopes;
+        if (!envelopes.length) { container.innerHTML = '<p class="empty-state">No envelopes created yet.</p>'; return; }
+        container.innerHTML = envelopes.map(env => {
             const perPaycheck = this.getEnvelopePerPaycheckTarget(env);
-            const balanceClass = balance < -0.005 ? 'negative' : 'positive';
-            html += `
-                <div class="paycheck-alloc-row">
-                    <div class="paycheck-alloc-info">
-                        <span class="color-dot" style="background:${this.escapeHtml(env.color)}"></span>
-                        <span class="alloc-name">${this.escapeHtml(env.name)}</span>
-                    </div>
-                    <span class="alloc-balance ${balanceClass}">${this.formatCurrency(balance)}</span>
-                    <input type="number" id="paycheck-alloc-${this.escapeHtml(env.id)}" class="alloc-input" step="0.01" min="0" value="${perPaycheck.toFixed(2)}" oninput="app.updatePaycheckUnallocated()">
-                    <span class="alloc-target">${this.formatCurrency(perPaycheck)}/ea</span>
-                </div>`;
-        });
-        container.innerHTML = html;
+            const balClass = env.balance < -0.005 ? 'negative' : 'positive';
+            return `<div class="paycheck-alloc-row">
+                <div class="paycheck-alloc-info"><span class="color-dot" style="background:${this.escapeHtml(env.color)}"></span><span class="alloc-name">${this.escapeHtml(env.name)}</span></div>
+                <span class="alloc-balance ${balClass}">${this.formatCurrency(env.balance)}</span>
+                <input type="number" id="paycheck-alloc-${this.escapeHtml(env.id)}" class="alloc-input" step="0.01" min="0" value="${perPaycheck.toFixed(2)}">
+            </div>`;
+        }).join('');
     }
 
     updatePaycheckUnallocated() {
-        const totalAmount = parseFloat(document.getElementById('paycheck-amount').value) || 0;
-        const envelopes = this.data.envelopes || [];
+        const total = parseFloat(document.getElementById('paycheck-amount')?.value) || 0;
         let allocated = 0;
-        envelopes.forEach(env => {
+        this.data.envelopes.forEach(env => {
             const input = document.getElementById(`paycheck-alloc-${env.id}`);
             if (input) allocated += parseFloat(input.value) || 0;
         });
-
-        const unallocated = totalAmount - allocated;
         const el = document.getElementById('paycheck-unallocated');
         if (el) {
-            el.textContent = this.formatCurrency(unallocated);
-            el.className = 'paycheck-unallocated-value' + (unallocated < -0.005 ? ' negative' : '');
+            el.textContent = this.formatCurrency(total - allocated);
+            el.className = 'paycheck-unallocated-value' + ((total - allocated) < -0.005 ? ' negative' : '');
         }
     }
 
@@ -3668,87 +2084,40 @@ class FinanceApp {
         const totalAmount = parseFloat(document.getElementById('paycheck-amount').value);
         const depositAccountId = document.getElementById('paycheck-account').value || null;
         const date = document.getElementById('paycheck-date').value;
+        if (!totalAmount || totalAmount <= 0) { this.showToast('Paycheck amount must be greater than 0', 'error'); return; }
+        if (!date) { this.showToast('Date is required', 'error'); return; }
 
-        if (!totalAmount || totalAmount <= 0) {
-            this.showToast('Paycheck amount must be greater than 0', 'error');
-            return;
-        }
-        if (!date) {
-            this.showToast('Date is required', 'error');
-            return;
-        }
-
-        const envelopes = this.data.envelopes || [];
         const allocations = [];
         let totalAllocated = 0;
-
-        envelopes.forEach(env => {
+        this.data.envelopes.forEach(env => {
             const input = document.getElementById(`paycheck-alloc-${env.id}`);
             const amount = input ? parseFloat(input.value) || 0 : 0;
-            if (amount > 0) {
-                allocations.push({ envelopeId: env.id, amount });
-                totalAllocated += amount;
-            }
+            if (amount > 0) { allocations.push({ envelopeId: env.id, amount }); totalAllocated += amount; }
         });
+        if (totalAllocated > totalAmount + 0.005) { this.showToast('Allocations exceed paycheck amount', 'error'); return; }
 
-        if (totalAllocated > totalAmount + 0.005) {
-            this.showToast('Allocations exceed paycheck amount', 'error');
-            return;
-        }
-
-        // Create income transaction
-        const transactionId = Date.now().toString();
-        const source = sourceId ? (this.data.incomeSources || []).find(s => s.id === sourceId) : null;
+        // Income transaction
+        const source = sourceId ? this.data.incomeSources.find(s => s.id === sourceId) : null;
         const sourceName = source ? source.name : 'Paycheck';
-
-        const transaction = {
-            id: transactionId,
-            type: 'income',
-            amount: totalAmount,
-            description: `${sourceName} paycheck`,
-            categoryId: 'salary',
-            date,
-            notes: `Envelope allocations: ${allocations.length} envelopes`,
-            fromAccountId: null,
-            toAccountId: depositAccountId,
-            createdAt: new Date().toISOString()
-        };
-
+        const txnId = this.generateId();
+        const transaction = { id: txnId, type: 'income', amount: totalAmount, description: `${sourceName} paycheck`, categoryId: 'salary', date, notes: `Envelope allocations: ${allocations.length} envelopes`, fromAccountId: null, toAccountId: depositAccountId, createdAt: new Date().toISOString() };
         this.applyTransactionAccountEffect(transaction);
         this.data.transactions.push(transaction);
 
         // Update envelope balances
         allocations.forEach(alloc => {
-            const env = envelopes.find(e => e.id === alloc.envelopeId);
-            if (env) {
-                if (!env.accountBalances) env.accountBalances = {};
-                const acctKey = depositAccountId || '_cash';
-                env.accountBalances[acctKey] = (env.accountBalances[acctKey] || 0) + alloc.amount;
-            }
+            const env = this.data.envelopes.find(e => e.id === alloc.envelopeId);
+            if (env) env.balance += alloc.amount;
         });
 
-        // Save allocation template to income source
+        // Save template
         if (source) {
             source.allocationTemplate = {};
-            allocations.forEach(alloc => {
-                source.allocationTemplate[alloc.envelopeId] = alloc.amount;
-            });
+            allocations.forEach(a => { source.allocationTemplate[a.envelopeId] = a.amount; });
         }
 
-        // Record paycheck history
-        if (!this.data.paycheckHistory) this.data.paycheckHistory = [];
-        this.data.paycheckHistory.push({
-            id: transactionId + '-paycheck',
-            incomeSourceId: sourceId,
-            incomeSourceName: sourceName,
-            totalAmount,
-            depositAccountId,
-            allocations,
-            unallocated: totalAmount - totalAllocated,
-            transactionId,
-            date,
-            createdAt: new Date().toISOString()
-        });
+        // Record history
+        this.data.paycheckHistory.push({ id: txnId + '-paycheck', incomeSourceId: sourceId, incomeSourceName: sourceName, totalAmount, depositAccountId, allocations, unallocated: totalAmount - totalAllocated, transactionId: txnId, date, createdAt: new Date().toISOString() });
 
         this.recordNetworthSnapshot();
         this.saveData();
@@ -3758,19 +2127,17 @@ class FinanceApp {
         this.showToast(`Paycheck of ${this.formatCurrency(totalAmount)} recorded`, 'success');
     }
 
-    // Envelope transfers
+    // ==========================================
+    // ENVELOPE TRANSFERS
+    // ==========================================
 
     populateEnvelopeTransferDropdowns() {
         const fromSelect = document.getElementById('transfer-from-envelope');
         const toSelect = document.getElementById('transfer-to-envelope');
-        const envelopes = this.data.envelopes || [];
-
         fromSelect.innerHTML = '<option value="">Select envelope...</option>';
         toSelect.innerHTML = '<option value="">Select envelope...</option>';
-
-        envelopes.forEach(env => {
-            const balance = this.getEnvelopeBalance(env);
-            const opt = `<option value="${this.escapeHtml(env.id)}">${this.escapeHtml(env.name)} (${this.formatCurrency(balance)})</option>`;
+        this.data.envelopes.forEach(env => {
+            const opt = `<option value="${this.escapeHtml(env.id)}">${this.escapeHtml(env.name)} (${this.formatCurrency(env.balance)})</option>`;
             fromSelect.innerHTML += opt;
             toSelect.innerHTML += opt;
         });
@@ -3781,288 +2148,675 @@ class FinanceApp {
         const fromId = document.getElementById('transfer-from-envelope').value;
         const toId = document.getElementById('transfer-to-envelope').value;
         const amount = parseFloat(document.getElementById('envelope-transfer-amount').value);
-
-        if (!fromId || !toId) {
-            this.showToast('Select both envelopes', 'error');
-            return;
-        }
-        if (fromId === toId) {
-            this.showToast('Cannot transfer to the same envelope', 'error');
-            return;
-        }
-        if (!amount || amount <= 0) {
-            this.showToast('Amount must be greater than 0', 'error');
-            return;
-        }
-
-        const fromEnv = (this.data.envelopes || []).find(e => e.id === fromId);
-        const toEnv = (this.data.envelopes || []).find(e => e.id === toId);
+        if (!fromId || !toId) { this.showToast('Select both envelopes', 'error'); return; }
+        if (fromId === toId) { this.showToast('Cannot transfer to same envelope', 'error'); return; }
+        if (!amount || amount <= 0) { this.showToast('Amount must be greater than 0', 'error'); return; }
+        const fromEnv = this.data.envelopes.find(e => e.id === fromId);
+        const toEnv = this.data.envelopes.find(e => e.id === toId);
         if (!fromEnv || !toEnv) return;
-
-        // Move from the first account that has funds
-        let remaining = amount;
-        for (const [acctId, bal] of Object.entries(fromEnv.accountBalances || {})) {
-            if (remaining <= 0) break;
-            const move = Math.min(bal, remaining);
-            fromEnv.accountBalances[acctId] -= move;
-            if (!toEnv.accountBalances) toEnv.accountBalances = {};
-            toEnv.accountBalances[acctId] = (toEnv.accountBalances[acctId] || 0) + move;
-            remaining -= move;
-        }
-
+        fromEnv.balance -= amount;
+        toEnv.balance += amount;
         this.saveData();
         this.closeModal('envelope-transfer-modal');
         this.renderEnvelopes();
         this.showToast(`Transferred ${this.formatCurrency(amount)} between envelopes`, 'success');
     }
 
-    // Transaction integration
+    // ==========================================
+    // RENDERING METHODS
+    // ==========================================
+    // RENDERING_START
 
-    applyEnvelopeEffect(transaction) {
-        if (!this.data.envelopes || this.data.envelopes.length === 0) return;
-        const { type, amount, categoryId, fromAccountId } = transaction;
-
-        if (type !== 'expense' || !categoryId) return;
-
-        const envelope = this.data.envelopes.find(e => e.linkedCategoryId === categoryId);
-        if (!envelope) return;
-
-        const fromAccount = fromAccountId ? this.data.assets.find(a => a.id === fromAccountId) : null;
-        const isCreditCard = fromAccount && fromAccount.type === 'liability' && fromAccount.category === 'credit-card';
-
-        if (isCreditCard) {
-            // CC charge: money still in bank, but earmarked for CC payment
-            envelope.ccPending = (envelope.ccPending || 0) + amount;
-        } else if (fromAccountId) {
-            // Bank/debit charge: reduce envelope's account balance
-            if (!envelope.accountBalances) envelope.accountBalances = {};
-            envelope.accountBalances[fromAccountId] = (envelope.accountBalances[fromAccountId] || 0) - amount;
-        } else {
-            // Cash: reduce a generic cash balance
-            if (!envelope.accountBalances) envelope.accountBalances = {};
-            envelope.accountBalances['_cash'] = (envelope.accountBalances['_cash'] || 0) - amount;
-        }
-
-        // Check for overdrawn
-        const balance = this.getEnvelopeBalance(envelope);
-        if (balance < -0.005) {
-            this.showToast(`${envelope.name} envelope is overdrawn by ${this.formatCurrency(Math.abs(balance))}. This may affect your ability to pay other bills.`, 'warning');
-        }
+    renderAll() {
+        this.renderDashboard();
+        this.populateCategorySelects();
+        this.populateQuickAddCategories();
     }
 
-    reverseEnvelopeEffect(transaction) {
-        if (!this.data.envelopes || this.data.envelopes.length === 0) return;
-        const { type, amount, categoryId, fromAccountId } = transaction;
-
-        if (type !== 'expense' || !categoryId) return;
-
-        const envelope = this.data.envelopes.find(e => e.linkedCategoryId === categoryId);
-        if (!envelope) return;
-
-        const fromAccount = fromAccountId ? this.data.assets.find(a => a.id === fromAccountId) : null;
-        const isCreditCard = fromAccount && fromAccount.type === 'liability' && fromAccount.category === 'credit-card';
-
-        if (isCreditCard) {
-            envelope.ccPending = Math.max(0, (envelope.ccPending || 0) - amount);
-        } else if (fromAccountId) {
-            if (!envelope.accountBalances) envelope.accountBalances = {};
-            envelope.accountBalances[fromAccountId] = (envelope.accountBalances[fromAccountId] || 0) + amount;
-        } else {
-            if (!envelope.accountBalances) envelope.accountBalances = {};
-            envelope.accountBalances['_cash'] = (envelope.accountBalances['_cash'] || 0) + amount;
-        }
-    }
-
-    distributePaymentAcrossEnvelopes(paymentAmount, fromAccountId) {
-        if (!this.data.envelopes || this.data.envelopes.length === 0) return;
-
-        const envelopesWithPending = this.data.envelopes.filter(e => (e.ccPending || 0) > 0.005);
-        if (envelopesWithPending.length === 0) return;
-
-        const totalPending = envelopesWithPending.reduce((sum, e) => sum + (e.ccPending || 0), 0);
-        const distributable = Math.min(paymentAmount, totalPending);
-
-        envelopesWithPending.forEach(env => {
-            const share = (env.ccPending / totalPending) * distributable;
-            env.ccPending = Math.max(0, env.ccPending - share);
-            if (fromAccountId) {
-                if (!env.accountBalances) env.accountBalances = {};
-                env.accountBalances[fromAccountId] = (env.accountBalances[fromAccountId] || 0) - share;
-            }
+    renderDashboard() {
+        const now = new Date();
+        const cm = now.getMonth(), cy = now.getFullYear();
+        const monthTxns = this.data.transactions.filter(t => {
+            const d = this.parseDateLocal(t.date);
+            return d.getMonth() === cm && d.getFullYear() === cy;
         });
+        const monthlyIncome = monthTxns.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
+        const monthlyExpenses = monthTxns.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+        const totalAssets = this.data.assets.filter(a => a.type === 'asset').reduce((s, a) => s + a.value, 0);
+        const totalLiabilities = this.data.assets.filter(a => a.type === 'liability').reduce((s, a) => s + a.value, 0);
+
+        document.getElementById('monthly-income').textContent = this.formatCurrency(monthlyIncome);
+        document.getElementById('monthly-expenses').textContent = this.formatCurrency(monthlyExpenses);
+        document.getElementById('monthly-balance').textContent = this.formatCurrency(monthlyIncome - monthlyExpenses);
+        document.getElementById('total-networth').textContent = this.formatCurrency(totalAssets - totalLiabilities);
+
+        this.renderEnvelopeStatusBars();
+        this.renderSpendingPieChart();
+        this.renderRecentTransactions();
+        this.renderUpcomingRecurring();
     }
-
-    // Rendering
-
-    renderEnvelopes() {
-        const container = document.getElementById('envelopes-page');
+    renderEnvelopeStatusBars() {
+        const container = document.getElementById('envelope-status-bars');
         if (!container) return;
-
-        const envelopes = this.data.envelopes || [];
-        const overdrawn = this.getOverdrawnEnvelopes();
-
-        // Summary calculations
-        const totalBalance = envelopes.reduce((sum, e) => sum + this.getEnvelopeBalance(e), 0);
-        const totalCcPending = envelopes.reduce((sum, e) => sum + (e.ccPending || 0), 0);
-        const totalPerPaycheck = envelopes.reduce((sum, e) => sum + this.getEnvelopePerPaycheckTarget(e), 0);
-
-        // Summary bar
-        document.getElementById('env-total-balance').textContent = this.formatCurrency(totalBalance);
-        document.getElementById('env-cc-pending').textContent = this.formatCurrency(totalCcPending);
-        document.getElementById('env-per-paycheck').textContent = this.formatCurrency(totalPerPaycheck);
-
-        // Overdrawn banner
-        const banner = document.getElementById('envelopes-overdrawn-banner');
-        if (overdrawn.length > 0) {
-            banner.style.display = 'flex';
-            const names = overdrawn.map(e => this.escapeHtml(e.name)).join(', ');
-            banner.querySelector('.warning-message').textContent = `Overdrawn envelopes: ${overdrawn.map(e => e.name).join(', ')}`;
-        } else {
-            banner.style.display = 'none';
+        const envelopes = this.data.envelopes;
+        if (!envelopes.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-envelope-open-text"></i><p>No envelopes yet</p></div>';
+            return;
         }
+        container.innerHTML = envelopes.map(env => {
+            const mt = this.getEnvelopeMonthlyTarget(env);
+            const pct = mt > 0 ? Math.min((env.spent / mt) * 100, 100) : 0;
+            const cls = pct >= 100 ? 'danger' : pct >= 75 ? 'warning' : 'success';
+            return `<div class="envelope-bar-item">
+                <div class="envelope-bar-header">
+                    <span class="envelope-bar-name"><span class="color-dot" style="background:${this.escapeHtml(env.color)}"></span>${this.escapeHtml(env.name)}</span>
+                    <span class="envelope-bar-values">${this.formatCurrency(env.spent)} / ${this.formatCurrency(mt)}</span>
+                </div>
+                <div class="progress-bar"><div class="progress-fill ${cls}" style="width:${pct}%"></div></div>
+            </div>`;
+        }).join('');
+    }
+    renderSpendingPieChart() {
+        const canvas = document.getElementById('spending-pie-chart');
+        if (!canvas) return;
+        const now = new Date();
+        const expenses = this.data.transactions.filter(t => {
+            const d = this.parseDateLocal(t.date);
+            return t.type === 'expense' && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+        });
+        const catMap = {};
+        expenses.forEach(t => {
+            const cat = this.getCategoryById(t.categoryId);
+            if (!catMap[cat.name]) catMap[cat.name] = { total: 0, color: cat.color };
+            catMap[cat.name].total += t.amount;
+        });
+        const labels = Object.keys(catMap);
+        const data = labels.map(l => catMap[l].total);
+        const colors = labels.map(l => catMap[l].color);
+        if (this.charts.spendingPie) {
+            this.charts.spendingPie.data.labels = labels;
+            this.charts.spendingPie.data.datasets[0].data = data;
+            this.charts.spendingPie.data.datasets[0].backgroundColor = colors;
+            this.charts.spendingPie.update();
+        } else if (labels.length) {
+            this.charts.spendingPie = new Chart(canvas, {
+                type: 'doughnut',
+                data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8 } } } }
+            });
+        }
+    }
+    renderRecentTransactions() {
+        const container = document.getElementById('recent-transactions-list');
+        if (!container) return;
+        const recent = [...this.data.transactions].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 5);
+        if (!recent.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-receipt"></i><p>No transactions yet</p></div>';
+            return;
+        }
+        container.innerHTML = recent.map(t => {
+            const cat = this.getCategoryById(t.categoryId);
+            const isInc = t.type === 'income';
+            return `<div class="recent-item">
+                <div class="recent-icon" style="background:${cat.color}20;color:${cat.color}"><i class="fas fa-${isInc ? 'arrow-down' : t.type === 'transfer' ? 'exchange-alt' : 'arrow-up'}"></i></div>
+                <div class="recent-details"><span class="recent-desc">${this.escapeHtml(t.description)}</span><span class="recent-date">${this.formatDateLocal(t.date)}</span></div>
+                <span class="recent-amount ${isInc ? 'positive' : ''}">${isInc ? '+' : '-'}${this.formatCurrency(t.amount)}</span>
+            </div>`;
+        }).join('');
+    }
+    renderUpcomingRecurring() {
+        const container = document.getElementById('upcoming-recurring-list');
+        if (!container) return;
+        const upcoming = [...this.data.recurring].sort((a, b) => new Date(a.nextDate) - new Date(b.nextDate)).slice(0, 5);
+        if (!upcoming.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-check"></i><p>No upcoming bills</p></div>';
+            return;
+        }
+        container.innerHTML = upcoming.map(r => {
+            const cat = this.getCategoryById(r.categoryId);
+            const days = Math.ceil((this.parseDateLocal(r.nextDate) - new Date().setHours(0,0,0,0)) / 86400000);
+            const urg = days <= 3 ? 'urgent' : days <= 7 ? 'soon' : '';
+            return `<div class="upcoming-item ${urg}">
+                <div class="upcoming-icon" style="background:${cat.color}20;color:${cat.color}"><i class="fas fa-${r.type === 'income' ? 'arrow-down' : 'file-invoice-dollar'}"></i></div>
+                <div class="upcoming-details"><span class="upcoming-name">${this.escapeHtml(r.name)}</span><span class="upcoming-date">${days <= 0 ? 'Due today' : days === 1 ? 'Due tomorrow' : `Due in ${days} days`}</span></div>
+                <span class="upcoming-amount">${this.formatCurrency(r.amount)}</span>
+            </div>`;
+        }).join('');
+    }
+    renderTransactions() {
+        const filtered = this.getFilteredTransactions();
+        const totalPages = Math.ceil(filtered.length / this.transactionsPerPage) || 1;
+        if (this.transactionPage > totalPages) this.transactionPage = totalPages;
+        const start = (this.transactionPage - 1) * this.transactionsPerPage;
+        const pageItems = filtered.slice(start, start + this.transactionsPerPage);
+        const tbody = document.getElementById('transactions-tbody');
+        if (!tbody) return;
+        if (!pageItems.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-table">No transactions found</td></tr>';
+            this.renderTransactionPagination(0, 1);
+            return;
+        }
+        tbody.innerHTML = pageItems.map(t => {
+            const cat = this.getCategoryById(t.categoryId);
+            const isInc = t.type === 'income';
+            const typeLabel = t.type.charAt(0).toUpperCase() + t.type.slice(1);
+            return `<tr>
+                <td>${this.formatDateLocal(t.date)}</td>
+                <td><div class="transaction-desc">${this.escapeHtml(t.description)}</div><span class="transaction-type badge-${t.type}">${typeLabel}</span></td>
+                <td><span class="category-badge" style="background:${cat.color}20;color:${cat.color}">${this.escapeHtml(cat.name)}</span></td>
+                <td class="${isInc ? 'positive' : ''}">${isInc ? '+' : '-'}${this.formatCurrency(t.amount)}</td>
+                <td class="actions-cell">
+                    <button class="btn-icon" data-action="edit-transaction" data-id="${this.escapeHtml(t.id)}" aria-label="Edit"><i class="fas fa-pen"></i></button>
+                    <button class="btn-icon delete" data-action="delete-transaction" data-id="${this.escapeHtml(t.id)}" aria-label="Delete"><i class="fas fa-trash"></i></button>
+                </td>
+            </tr>`;
+        }).join('');
+        this.renderTransactionPagination(filtered.length, totalPages);
+    }
+    renderTransactionPagination(total, totalPages) {
+        const table = document.getElementById('transactions-table');
+        if (!table) return;
+        let pagEl = table.parentElement.querySelector('.pagination-controls');
+        if (!pagEl) { pagEl = document.createElement('div'); pagEl.className = 'pagination-controls'; table.parentElement.appendChild(pagEl); }
+        if (totalPages <= 1) { pagEl.innerHTML = ''; return; }
+        pagEl.innerHTML = `
+            <button class="btn-secondary btn-sm" data-action="prev-page" ${this.transactionPage <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i> Prev</button>
+            <span class="pagination-info">Page ${this.transactionPage} of ${totalPages} (${total} transactions)</span>
+            <button class="btn-secondary btn-sm" data-action="next-page" ${this.transactionPage >= totalPages ? 'disabled' : ''}>Next <i class="fas fa-chevron-right"></i></button>`;
+    }
+    renderRecurring() {
+        const recurring = this.data.recurring;
+        let monthlyInc = 0, monthlyExp = 0;
+        recurring.forEach(r => {
+            const m = this.getMonthlyEquivalent(r.amount, r.frequency);
+            if (r.type === 'income') monthlyInc += m; else monthlyExp += m;
+        });
+        document.getElementById('recurring-income').textContent = this.formatCurrency(monthlyInc);
+        document.getElementById('recurring-expenses').textContent = this.formatCurrency(monthlyExp);
+        document.getElementById('recurring-net').textContent = this.formatCurrency(monthlyInc - monthlyExp);
+        const tbody = document.getElementById('recurring-tbody');
+        if (!tbody) return;
+        if (!recurring.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-table">No recurring transactions</td></tr>';
+            return;
+        }
+        tbody.innerHTML = recurring.map(r => {
+            const cat = this.getCategoryById(r.categoryId);
+            const freq = r.frequency.charAt(0).toUpperCase() + r.frequency.slice(1);
+            const days = Math.ceil((this.parseDateLocal(r.nextDate) - new Date().setHours(0,0,0,0)) / 86400000);
+            const dc = days <= 3 ? 'text-danger' : days <= 7 ? 'text-warning' : '';
+            return `<tr>
+                <td>${this.escapeHtml(r.name)}</td>
+                <td><span class="category-badge" style="background:${cat.color}20;color:${cat.color}">${this.escapeHtml(cat.name)}</span></td>
+                <td class="${r.type === 'income' ? 'positive' : ''}">${r.type === 'income' ? '+' : '-'}${this.formatCurrency(r.amount)}</td>
+                <td>${freq}</td>
+                <td class="${dc}">${this.formatDateLocal(r.nextDate)}</td>
+                <td class="actions-cell">
+                    <button class="btn-icon" data-action="edit-recurring" data-id="${this.escapeHtml(r.id)}" aria-label="Edit"><i class="fas fa-pen"></i></button>
+                    <button class="btn-icon delete" data-action="delete-recurring" data-id="${this.escapeHtml(r.id)}" aria-label="Delete"><i class="fas fa-trash"></i></button>
+                </td>
+            </tr>`;
+        }).join('');
+    }
+    renderEnvelopes() {
+        const envelopes = this.data.envelopes;
+        const totalFunded = envelopes.reduce((s, e) => s + e.balance + e.spent, 0);
+        const totalSpent = envelopes.reduce((s, e) => s + e.spent, 0);
+        const monthlyTarget = envelopes.reduce((s, e) => s + this.getEnvelopeMonthlyTarget(e), 0);
+        const perPaycheck = envelopes.reduce((s, e) => s + this.getEnvelopePerPaycheckTarget(e), 0);
+        document.getElementById('env-total-balance').textContent = this.formatCurrency(totalFunded);
+        document.getElementById('env-total-spent').textContent = this.formatCurrency(totalSpent);
+        document.getElementById('env-monthly-target').textContent = this.formatCurrency(monthlyTarget);
+        document.getElementById('env-per-paycheck').textContent = this.formatCurrency(perPaycheck);
 
-        // Envelope cards
+        const overdrawn = envelopes.filter(e => e.balance < -0.005);
+        const banner = document.getElementById('envelopes-overdrawn-banner');
+        if (overdrawn.length) {
+            banner.style.display = 'flex';
+            banner.querySelector('.warning-message').textContent = `${overdrawn.length} envelope${overdrawn.length > 1 ? 's are' : ' is'} overdrawn`;
+        } else { banner.style.display = 'none'; }
+
         const grid = document.getElementById('envelopes-grid');
-        if (envelopes.length === 0) {
-            grid.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-envelope-open-text"></i>
-                    <h3>No Envelopes Yet</h3>
-                    <p>Create envelopes to start allocating your paychecks.</p>
-                    <button class="btn-primary" onclick="app.openModal('envelope-modal')">
-                        <i class="fas fa-plus"></i> Create First Envelope
-                    </button>
-                </div>`;
+        if (!envelopes.length) {
+            grid.innerHTML = '<div class="empty-state"><i class="fas fa-envelope-open-text"></i><p>No envelopes yet. Create your first envelope to start tracking spending.</p><button class="btn-primary" data-action="open-envelope"><i class="fas fa-plus"></i> Add Envelope</button></div>';
         } else {
             grid.innerHTML = envelopes.map(env => {
-                const balance = this.getEnvelopeBalance(env);
-                const isOverdrawn = balance < -0.005;
-                const perPaycheck = this.getEnvelopePerPaycheckTarget(env);
-                const cat = env.linkedCategoryId ? this.getCategoryById(env.linkedCategoryId) : null;
-                const freqLabel = { weekly: 'wk', biweekly: '2wk', monthly: 'mo', quarterly: 'qtr', yearly: 'yr' }[env.targetFrequency] || 'mo';
-
-                // Account breakdown
-                let acctBreakdown = '';
-                const acctEntries = Object.entries(env.accountBalances || {}).filter(([, v]) => Math.abs(v) > 0.005);
-                if (acctEntries.length > 0) {
-                    acctBreakdown = acctEntries.map(([acctId, val]) => {
-                        if (acctId === '_cash') return `Cash: ${this.formatCurrency(val)}`;
-                        const acct = this.data.assets.find(a => a.id === acctId);
-                        const name = acct ? acct.name : 'Account';
-                        return `${this.escapeHtml(name)}: ${this.formatCurrency(val)}`;
-                    }).join(' &middot; ');
-                }
-
-                return `
-                    <div class="envelope-card${isOverdrawn ? ' overdrawn' : ''}">
-                        <div class="envelope-card-header">
-                            <div class="envelope-card-title">
-                                <span class="color-dot" style="background:${this.escapeHtml(env.color)}"></span>
-                                <h4>${this.escapeHtml(env.name)}</h4>
-                            </div>
-                            <div class="envelope-card-actions">
-                                <button class="btn-icon" onclick="app.editEnvelope('${env.id}')" title="Edit" aria-label="Edit envelope"><i class="fas fa-edit"></i></button>
-                                <button class="btn-icon delete" onclick="app.deleteEnvelope('${env.id}')" title="Delete" aria-label="Delete envelope"><i class="fas fa-trash"></i></button>
-                            </div>
+                const mt = this.getEnvelopeMonthlyTarget(env);
+                const pct = mt > 0 ? Math.min((env.spent / mt) * 100, 100) : 0;
+                const cls = pct >= 100 ? 'danger' : pct >= 75 ? 'warning' : 'success';
+                const funded = env.balance + env.spent;
+                const fundedCls = funded < -0.005 ? 'negative' : 'positive';
+                const availCls = env.balance < -0.005 ? 'negative' : 'positive';
+                const ccSpent = this.getEnvelopeCCSpent(env.id);
+                const showCC = ccSpent > 0;
+                return `<div class="envelope-card" style="border-left: 4px solid ${this.escapeHtml(env.color)}">
+                    <div class="envelope-card-header">
+                        <span class="envelope-card-name">${this.escapeHtml(env.name)}</span>
+                        <div class="envelope-card-actions">
+                            <button class="btn-icon" data-action="edit-envelope" data-id="${this.escapeHtml(env.id)}" aria-label="Edit"><i class="fas fa-pen"></i></button>
+                            <button class="btn-icon delete" data-action="delete-envelope" data-id="${this.escapeHtml(env.id)}" aria-label="Delete"><i class="fas fa-trash"></i></button>
                         </div>
-                        <div class="envelope-balance ${isOverdrawn ? 'negative' : 'positive'}">${this.formatCurrency(balance)}</div>
-                        ${cat ? `<div class="envelope-category-link"><i class="fas fa-link"></i> ${this.escapeHtml(cat.name)}</div>` : ''}
-                        <div class="envelope-meta">
-                            <span>Target: ${this.formatCurrency(env.targetAmount)}/${freqLabel}</span>
-                            <span>Per check: ${this.formatCurrency(perPaycheck)}</span>
+                    </div>
+                    <div class="envelope-card-stats">
+                        <div class="env-stat">
+                            <span class="env-stat-label">Funded</span>
+                            <span class="env-stat-value ${fundedCls}">${this.formatCurrency(funded)}</span>
                         </div>
-                        ${(env.ccPending || 0) > 0.005 ? `<div class="envelope-cc-pending"><i class="fas fa-credit-card"></i> CC pending: ${this.formatCurrency(env.ccPending)}</div>` : ''}
-                        ${acctBreakdown ? `<div class="envelope-accounts">${acctBreakdown}</div>` : ''}
-                    </div>`;
+                        <div class="env-stat">
+                            <span class="env-stat-label">Spent</span>
+                            <span class="env-stat-value">${this.formatCurrency(env.spent)}</span>
+                        </div>
+                        ${showCC ? `<div class="env-stat">
+                            <span class="env-stat-label"><i class="fas fa-credit-card"></i> On CC</span>
+                            <span class="env-stat-value">${this.formatCurrency(ccSpent)}</span>
+                        </div>` : ''}
+                        <div class="env-stat ${showCC ? 'env-stat-highlight' : ''}">
+                            <span class="env-stat-label">Available</span>
+                            <span class="env-stat-value ${availCls}">${this.formatCurrency(env.balance)}</span>
+                        </div>
+                    </div>
+                    <div class="env-progress-section">
+                        <div class="env-progress-labels">
+                            <span>${this.formatCurrency(env.spent)} of ${this.formatCurrency(mt)}</span>
+                        </div>
+                        <div class="progress-bar"><div class="progress-fill ${cls}" style="width:${pct}%"></div></div>
+                    </div>
+                </div>`;
             }).join('');
         }
-
-        // Income sources list
         this.renderIncomeSources();
-
-        // Paycheck history
         this.renderPaycheckHistory();
     }
-
     renderIncomeSources() {
         const container = document.getElementById('income-sources-list');
         if (!container) return;
-        const sources = this.data.incomeSources || [];
-
-        if (sources.length === 0) {
-            container.innerHTML = '<p class="text-muted">No income sources configured.</p>';
+        const sources = this.data.incomeSources;
+        if (!sources.length) {
+            container.innerHTML = '<div class="empty-state"><p>No income sources yet</p></div>';
             return;
         }
-
         container.innerHTML = sources.map(s => {
             const acct = s.defaultAccountId ? this.data.assets.find(a => a.id === s.defaultAccountId) : null;
-            const acctName = acct ? acct.name : 'Not set';
-            return `
-                <div class="income-source-item">
-                    <div class="income-source-info">
-                        <strong>${this.escapeHtml(s.name)}</strong>
-                        <span class="text-muted">Default: ${this.escapeHtml(acctName)}</span>
-                    </div>
-                    <div class="income-source-actions">
-                        <button class="btn-icon" onclick="app.editIncomeSource('${s.id}')" title="Edit" aria-label="Edit income source"><i class="fas fa-edit"></i></button>
-                        <button class="btn-icon delete" onclick="app.deleteIncomeSource('${s.id}')" title="Delete" aria-label="Delete income source"><i class="fas fa-trash"></i></button>
-                    </div>
-                </div>`;
+            return `<div class="income-source-item">
+                <div class="income-source-info">
+                    <span class="income-source-name">${this.escapeHtml(s.name)}</span>
+                    ${acct ? `<span class="income-source-account"><i class="fas fa-university"></i> ${this.escapeHtml(acct.name)}</span>` : ''}
+                </div>
+                <div class="income-source-actions">
+                    <button class="btn-icon" data-action="edit-income-source" data-id="${this.escapeHtml(s.id)}" aria-label="Edit"><i class="fas fa-pen"></i></button>
+                    <button class="btn-icon delete" data-action="delete-income-source" data-id="${this.escapeHtml(s.id)}" aria-label="Delete"><i class="fas fa-trash"></i></button>
+                </div>
+            </div>`;
         }).join('');
     }
-
     renderPaycheckHistory() {
         const container = document.getElementById('paycheck-history-list');
         if (!container) return;
-        const history = (this.data.paycheckHistory || []).slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
-
-        if (history.length === 0) {
-            container.innerHTML = '<p class="text-muted">No paychecks recorded yet.</p>';
+        const history = [...this.data.paycheckHistory].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 10);
+        if (!history.length) {
+            container.innerHTML = '<div class="empty-state"><p>No paychecks recorded yet</p></div>';
             return;
         }
+        container.innerHTML = history.map(p => `
+            <div class="paycheck-history-item">
+                <div class="paycheck-history-info">
+                    <span class="paycheck-source-name">${this.escapeHtml(p.incomeSourceName || 'Paycheck')}</span>
+                    <span class="paycheck-date">${this.formatDateLocal(p.date)}</span>
+                </div>
+                <span class="paycheck-amount positive">+${this.formatCurrency(p.totalAmount)}</span>
+            </div>`).join('');
+    }
+    renderAccounts() {
+        const assets = this.data.assets;
+        const totalAssets = assets.filter(a => a.type === 'asset').reduce((s, a) => s + a.value, 0);
+        const totalLiabilities = assets.filter(a => a.type === 'liability').reduce((s, a) => s + a.value, 0);
+        document.getElementById('total-assets').textContent = this.formatCurrency(totalAssets);
+        document.getElementById('total-liabilities').textContent = this.formatCurrency(totalLiabilities);
+        document.getElementById('networth-value').textContent = this.formatCurrency(totalAssets - totalLiabilities);
 
-        container.innerHTML = history.map(p => {
-            const allocCount = p.allocations ? p.allocations.length : 0;
-            return `
-                <div class="paycheck-history-item">
-                    <div class="paycheck-history-info">
-                        <strong>${this.escapeHtml(p.incomeSourceName)}</strong>
-                        <span class="text-muted">${new Date(p.date).toLocaleDateString()}</span>
-                    </div>
-                    <div class="paycheck-history-details">
-                        <span class="paycheck-amount positive">${this.formatCurrency(p.totalAmount)}</span>
-                        <span class="text-muted">${allocCount} envelopes${p.unallocated > 0.005 ? `, ${this.formatCurrency(p.unallocated)} unallocated` : ''}</span>
-                    </div>
+        const groups = [
+            { title: 'Bank Accounts', icon: 'university', categories: ['checking', 'savings', 'cash'] },
+            { title: 'Investments & Retirement', icon: 'chart-line', categories: ['brokerage', 'crypto', '401k', '403b', 'ira', 'roth-ira', 'pension', 'hsa', 'fsa', '529'] },
+            { title: 'Credit Cards', icon: 'credit-card', categories: ['credit-card'] },
+            { title: 'Loans', icon: 'file-invoice-dollar', categories: ['auto-loan', 'personal-loan', 'student-loan', 'mortgage', 'heloc', 'other-debt'] },
+            { title: 'Other Assets', icon: 'gem', categories: ['property', 'vehicles', 'other-asset'] }
+        ];
+        const sectionsEl = document.getElementById('accounts-sections');
+        if (!assets.length) {
+            sectionsEl.innerHTML = '<div class="empty-state"><i class="fas fa-university"></i><p>No accounts yet. Add your first account to start tracking your net worth.</p><button class="btn-primary" data-action="open-asset"><i class="fas fa-plus"></i> Add Account</button></div>';
+        } else {
+            sectionsEl.innerHTML = groups.map(g => {
+                const ga = assets.filter(a => g.categories.includes(a.category));
+                if (!ga.length) return '';
+                return `<div class="accounts-section">
+                    <h3 class="accounts-section-title"><i class="fas fa-${g.icon}"></i> ${g.title}</h3>
+                    <div class="accounts-grid">${ga.map(a => this.renderAccountCard(a)).join('')}</div>
                 </div>`;
+            }).join('');
+        }
+        this.renderNetworthChart();
+    }
+
+    renderAccountCard(asset) {
+        const isDebt = asset.type === 'liability';
+        const valCls = isDebt ? 'negative' : 'positive';
+        let actions;
+        if (isDebt) {
+            actions = `<button class="btn-primary btn-sm" data-action="account-pay" data-id="${this.escapeHtml(asset.id)}"><i class="fas fa-credit-card"></i> Pay</button>`;
+        } else {
+            actions = `<button class="btn-primary btn-sm" data-action="account-contribute" data-id="${this.escapeHtml(asset.id)}"><i class="fas fa-plus"></i> Add</button>
+                <button class="btn-secondary btn-sm" data-action="account-withdraw" data-id="${this.escapeHtml(asset.id)}"><i class="fas fa-minus"></i></button>`;
+        }
+        let subtitle = this.formatAccountType(asset.category);
+        if (asset.institution) subtitle += ` &bull; ${this.escapeHtml(asset.institution)}`;
+        return `<div class="account-card">
+            <div class="account-card-header">
+                <div class="account-card-info" data-action="account-details" data-id="${this.escapeHtml(asset.id)}">
+                    <span class="account-card-name">${this.escapeHtml(asset.name)}</span>
+                    <span class="account-card-type">${subtitle}</span>
+                </div>
+                <div class="account-card-actions">
+                    <button class="btn-icon" data-action="edit-asset" data-id="${this.escapeHtml(asset.id)}" aria-label="Edit"><i class="fas fa-pen"></i></button>
+                    <button class="btn-icon delete" data-action="delete-asset" data-id="${this.escapeHtml(asset.id)}" aria-label="Delete"><i class="fas fa-trash"></i></button>
+                </div>
+            </div>
+            <div class="account-card-balance ${valCls}">${isDebt ? '-' : ''}${this.formatCurrency(asset.value)}</div>
+            <div class="account-card-quick-actions">${actions}</div>
+        </div>`;
+    }
+    renderNetworthChart() {
+        const canvas = document.getElementById('networth-chart');
+        if (!canvas) return;
+        const history = [...this.data.networthHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
+        if (history.length < 2) return;
+        const labels = history.map(h => this.parseDateLocal(h.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
+        const data = history.map(h => h.networth);
+        if (this.charts.networth) {
+            this.charts.networth.data.labels = labels;
+            this.charts.networth.data.datasets[0].data = data;
+            this.charts.networth.update();
+        } else {
+            this.charts.networth = new Chart(canvas, {
+                type: 'line',
+                data: { labels, datasets: [{ label: 'Net Worth', data, borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.1)', fill: true, tension: 0.3, pointRadius: 3 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: v => this.formatCurrency(v) } } } }
+            });
+        }
+    }
+    renderReports() {
+        const { start, end } = this.getReportDateRange();
+        this.renderBudgetCompliance();
+        this.renderIncomeExpenseChart(start, end);
+        this.renderExpenseBreakdownChart(start, end);
+        this.renderSpendingTrendChart(start, end);
+        this.renderSavingsChart(start, end);
+        this.renderCategoryStats(start, end);
+    }
+    getReportDateRange() {
+        const period = document.getElementById('report-period')?.value || 'thisMonth';
+        const now = new Date();
+        let start, end = new Date();
+        switch (period) {
+            case 'thisMonth': start = new Date(now.getFullYear(), now.getMonth(), 1); break;
+            case 'lastMonth': start = new Date(now.getFullYear(), now.getMonth() - 1, 1); end = new Date(now.getFullYear(), now.getMonth(), 0); break;
+            case 'last3Months': start = new Date(now.getFullYear(), now.getMonth() - 3, 1); break;
+            case 'last6Months': start = new Date(now.getFullYear(), now.getMonth() - 6, 1); break;
+            case 'thisYear': start = new Date(now.getFullYear(), 0, 1); break;
+            case 'allTime': start = new Date(2000, 0, 1); break;
+            default: start = new Date(now.getFullYear(), now.getMonth(), 1);
+        }
+        return { start, end };
+    }
+    renderBudgetCompliance() {
+        const summaryEl = document.getElementById('budget-compliance-summary');
+        const barsEl = document.getElementById('budget-compliance-bars');
+        if (!summaryEl || !barsEl) return;
+        const withTarget = this.data.envelopes.filter(e => e.targetAmount > 0);
+        if (!withTarget.length) {
+            summaryEl.innerHTML = '';
+            barsEl.innerHTML = '<div class="empty-state"><p>Set envelope targets to see budget compliance</p></div>';
+            return;
+        }
+        let onTrack = 0, overBudget = 0;
+        const bars = withTarget.map(env => {
+            const mt = this.getEnvelopeMonthlyTarget(env);
+            const pct = mt > 0 ? (env.spent / mt) * 100 : 0;
+            if (pct <= 100) onTrack++; else overBudget++;
+            const cls = pct >= 100 ? 'danger' : pct >= 75 ? 'warning' : 'success';
+            return `<div class="compliance-bar-item">
+                <div class="compliance-bar-header">
+                    <span><span class="color-dot" style="background:${this.escapeHtml(env.color)}"></span>${this.escapeHtml(env.name)}</span>
+                    <span>${this.formatCurrency(env.spent)} / ${this.formatCurrency(mt)}</span>
+                </div>
+                <div class="progress-bar"><div class="progress-fill ${cls}" style="width:${Math.min(pct, 100)}%"></div></div>
+            </div>`;
+        });
+        summaryEl.innerHTML = `<div class="compliance-stat on-track"><i class="fas fa-check-circle"></i> ${onTrack} on track</div>
+            <div class="compliance-stat over-budget"><i class="fas fa-exclamation-circle"></i> ${overBudget} over budget</div>`;
+        barsEl.innerHTML = bars.join('');
+    }
+    renderIncomeExpenseChart(start, end) {
+        const canvas = document.getElementById('income-expense-chart');
+        if (!canvas) return;
+        const txns = this.data.transactions.filter(t => { const d = this.parseDateLocal(t.date); return d >= start && d <= end; });
+        const months = {};
+        txns.forEach(t => {
+            const d = this.parseDateLocal(t.date);
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            if (!months[key]) months[key] = { income: 0, expenses: 0 };
+            if (t.type === 'income') months[key].income += t.amount;
+            else if (t.type === 'expense') months[key].expenses += t.amount;
+        });
+        const keys = Object.keys(months).sort();
+        const labels = keys.map(k => { const [y, m] = k.split('-'); return new Date(y, m - 1).toLocaleDateString(undefined, { month: 'short', year: '2-digit' }); });
+        const incData = keys.map(k => months[k].income);
+        const expData = keys.map(k => months[k].expenses);
+        if (this.charts.incomeExpense) {
+            this.charts.incomeExpense.data.labels = labels;
+            this.charts.incomeExpense.data.datasets[0].data = incData;
+            this.charts.incomeExpense.data.datasets[1].data = expData;
+            this.charts.incomeExpense.update();
+        } else {
+            this.charts.incomeExpense = new Chart(canvas, {
+                type: 'bar',
+                data: { labels, datasets: [{ label: 'Income', data: incData, backgroundColor: '#10b981' }, { label: 'Expenses', data: expData, backgroundColor: '#ef4444' }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } }, scales: { y: { ticks: { callback: v => this.formatCurrency(v) } } } }
+            });
+        }
+    }
+    renderExpenseBreakdownChart(start, end) {
+        const canvas = document.getElementById('expense-breakdown-chart');
+        if (!canvas) return;
+        const expenses = this.data.transactions.filter(t => { const d = this.parseDateLocal(t.date); return t.type === 'expense' && d >= start && d <= end; });
+        const catMap = {};
+        expenses.forEach(t => {
+            const cat = this.getCategoryById(t.categoryId);
+            if (!catMap[cat.name]) catMap[cat.name] = { total: 0, color: cat.color };
+            catMap[cat.name].total += t.amount;
+        });
+        const sorted = Object.entries(catMap).sort((a, b) => b[1].total - a[1].total);
+        const labels = sorted.map(([k]) => k);
+        const data = sorted.map(([, v]) => v.total);
+        const colors = sorted.map(([, v]) => v.color);
+        if (this.charts.expenseBreakdown) {
+            this.charts.expenseBreakdown.data.labels = labels;
+            this.charts.expenseBreakdown.data.datasets[0].data = data;
+            this.charts.expenseBreakdown.data.datasets[0].backgroundColor = colors;
+            this.charts.expenseBreakdown.update();
+        } else if (labels.length) {
+            this.charts.expenseBreakdown = new Chart(canvas, {
+                type: 'doughnut',
+                data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8 } } } }
+            });
+        }
+    }
+    renderSpendingTrendChart(start, end) {
+        const canvas = document.getElementById('spending-trend-chart');
+        if (!canvas) return;
+        const expenses = this.data.transactions.filter(t => { const d = this.parseDateLocal(t.date); return t.type === 'expense' && d >= start && d <= end; });
+        const months = {};
+        expenses.forEach(t => {
+            const d = this.parseDateLocal(t.date);
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            months[key] = (months[key] || 0) + t.amount;
+        });
+        const keys = Object.keys(months).sort();
+        const labels = keys.map(k => { const [y, m] = k.split('-'); return new Date(y, m - 1).toLocaleDateString(undefined, { month: 'short', year: '2-digit' }); });
+        const data = keys.map(k => months[k]);
+        if (this.charts.spendingTrend) {
+            this.charts.spendingTrend.data.labels = labels;
+            this.charts.spendingTrend.data.datasets[0].data = data;
+            this.charts.spendingTrend.update();
+        } else if (labels.length) {
+            this.charts.spendingTrend = new Chart(canvas, {
+                type: 'line',
+                data: { labels, datasets: [{ label: 'Spending', data, borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)', fill: true, tension: 0.3, pointRadius: 4 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: v => this.formatCurrency(v) } } } }
+            });
+        }
+    }
+    renderSavingsChart(start, end) {
+        const canvas = document.getElementById('savings-chart');
+        if (!canvas) return;
+        const txns = this.data.transactions.filter(t => { const d = this.parseDateLocal(t.date); return d >= start && d <= end; });
+        const months = {};
+        txns.forEach(t => {
+            const d = this.parseDateLocal(t.date);
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            if (!months[key]) months[key] = { income: 0, expenses: 0 };
+            if (t.type === 'income') months[key].income += t.amount;
+            else if (t.type === 'expense') months[key].expenses += t.amount;
+        });
+        const keys = Object.keys(months).sort();
+        const labels = keys.map(k => { const [y, m] = k.split('-'); return new Date(y, m - 1).toLocaleDateString(undefined, { month: 'short', year: '2-digit' }); });
+        const data = keys.map(k => { const m = months[k]; return m.income > 0 ? ((m.income - m.expenses) / m.income) * 100 : 0; });
+        if (this.charts.savings) {
+            this.charts.savings.data.labels = labels;
+            this.charts.savings.data.datasets[0].data = data;
+            this.charts.savings.update();
+        } else if (labels.length) {
+            this.charts.savings = new Chart(canvas, {
+                type: 'line',
+                data: { labels, datasets: [{ label: 'Savings Rate %', data, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, pointRadius: 4 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: v => v + '%' }, suggestedMin: 0, suggestedMax: 100 } } }
+            });
+        }
+    }
+    renderCategoryStats(start, end) {
+        const tbody = document.getElementById('category-stats-tbody');
+        if (!tbody) return;
+        const expenses = this.data.transactions.filter(t => { const d = this.parseDateLocal(t.date); return t.type === 'expense' && d >= start && d <= end; });
+        const total = expenses.reduce((s, t) => s + t.amount, 0);
+        const catMap = {};
+        expenses.forEach(t => {
+            const cat = this.getCategoryById(t.categoryId);
+            if (!catMap[cat.name]) catMap[cat.name] = { total: 0, count: 0, color: cat.color };
+            catMap[cat.name].total += t.amount;
+            catMap[cat.name].count++;
+        });
+        const sorted = Object.entries(catMap).sort((a, b) => b[1].total - a[1].total);
+        if (!sorted.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-table">No expense data for this period</td></tr>';
+            return;
+        }
+        tbody.innerHTML = sorted.map(([name, d]) => {
+            const pct = total > 0 ? ((d.total / total) * 100).toFixed(1) : 0;
+            return `<tr>
+                <td><span class="category-badge" style="background:${d.color}20;color:${d.color}">${this.escapeHtml(name)}</span></td>
+                <td>${this.formatCurrency(d.total)}</td>
+                <td>${d.count}</td>
+                <td>${this.formatCurrency(d.total / d.count)}</td>
+                <td>${pct}%</td>
+            </tr>`;
+        }).join('');
+    }
+    renderSettings() {
+        const nameInput = document.getElementById('settings-name');
+        if (nameInput) nameInput.value = this.data.settings.userName || '';
+        document.getElementById('theme-select').value = this.data.settings.theme;
+        document.getElementById('currency-select').value = this.data.settings.currency;
+        const list = document.getElementById('categories-list');
+        if (!list) return;
+        const grouped = { income: [], expense: [] };
+        this.data.categories.forEach(cat => { (grouped[cat.type] || grouped.expense).push(cat); });
+        list.innerHTML = ['income', 'expense'].map(type => {
+            const cats = grouped[type];
+            if (!cats.length) return '';
+            return `<div class="category-group-label">${type === 'income' ? 'Income' : 'Expense'} Categories</div>` +
+                cats.map(cat => `<div class="category-item">
+                    <span class="category-color" style="background:${this.escapeHtml(cat.color)}"></span>
+                    <span class="category-name">${this.escapeHtml(cat.name)}</span>
+                    <button class="btn-icon delete" data-action="delete-category" data-id="${this.escapeHtml(cat.id)}" aria-label="Delete category"><i class="fas fa-times"></i></button>
+                </div>`).join('');
         }).join('');
     }
 
+    // RENDERING_END
+
     // ==========================================
-    // TOAST NOTIFICATIONS
+    // DATA MANAGEMENT
+    // ==========================================
+
+    exportData() {
+        const blob = new Blob([JSON.stringify(this.data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `financeflow-backup-${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        this.showToast('Data exported successfully', 'success');
+    }
+
+    importData(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const imported = JSON.parse(e.target.result);
+                if (imported.transactions && imported.categories) {
+                    this.data = { ...this.data, ...imported };
+                    this.migrateData();
+                    this.saveData();
+                    this.renderAll();
+                    this.showToast('Data imported successfully', 'success');
+                } else { this.showToast('Invalid file format', 'error'); }
+            } catch (err) { this.showToast('Error reading file', 'error'); }
+        };
+        reader.readAsText(file);
+        event.target.value = '';
+    }
+
+    clearAllData() {
+        localStorage.removeItem('financeflow_data');
+        this.data = {
+            transactions: [], recurring: [], assets: [], networthHistory: [],
+            categories: [...this.defaultCategories], envelopes: [], incomeSources: [],
+            paycheckHistory: [], settings: { theme: 'light', currency: '$', onboardingComplete: false, userName: '' },
+            version: 2
+        };
+        this.saveData();
+        this.closeModal('confirm-dialog');
+        this.renderAll();
+        this.showToast('All data cleared', 'success');
+    }
+
+    // ==========================================
+    // TOAST
     // ==========================================
 
     showToast(message, type = 'success') {
         const container = document.getElementById('toast-container');
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-
-        const icons = {
-            success: 'check-circle',
-            error: 'exclamation-circle',
-            warning: 'exclamation-triangle'
-        };
-
-        toast.innerHTML = `
-            <i class="fas fa-${icons[type]} toast-icon"></i>
-            <span class="toast-message">${this.escapeHtml(message)}</span>
-        `;
-
+        const icons = { success: 'check-circle', error: 'exclamation-circle', warning: 'exclamation-triangle' };
+        toast.innerHTML = `<i class="fas fa-${icons[type]} toast-icon"></i><span class="toast-message">${this.escapeHtml(message)}</span>`;
         container.appendChild(toast);
-
-        setTimeout(() => {
-            toast.style.animation = 'slideInRight 0.3s ease reverse';
-            setTimeout(() => toast.remove(), 300);
-        }, 3000);
+        setTimeout(() => { toast.style.animation = 'slideInRight 0.3s ease reverse'; setTimeout(() => toast.remove(), 300); }, 3000);
     }
 }
 
