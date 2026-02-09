@@ -142,6 +142,7 @@
             id: 'env-rent',
             name: 'Rent',
             linkedCategoryId: 'housing',
+            linkedAccountId: null,
             targetAmount: 1200,
             targetFrequency: 'monthly',
             color: '#6366f1',
@@ -153,6 +154,7 @@
             id: 'env-groceries',
             name: 'Groceries',
             linkedCategoryId: 'groceries',
+            linkedAccountId: null,
             targetAmount: 400,
             targetFrequency: 'monthly',
             color: '#a855f7',
@@ -164,6 +166,7 @@
             id: 'env-gas',
             name: 'Gas & Car',
             linkedCategoryId: 'transportation',
+            linkedAccountId: null,
             targetAmount: 200,
             targetFrequency: 'monthly',
             color: '#d946ef',
@@ -175,6 +178,7 @@
             id: 'env-car-insurance',
             name: 'Car Insurance',
             linkedCategoryId: 'insurance',
+            linkedAccountId: null,
             targetAmount: 1100,
             targetFrequency: 'yearly',
             color: '#84cc16',
@@ -186,6 +190,7 @@
             id: 'env-utilities',
             name: 'Utilities',
             linkedCategoryId: 'utilities',
+            linkedAccountId: null,
             targetAmount: 250,
             targetFrequency: 'monthly',
             color: '#8b5cf6',
@@ -197,6 +202,7 @@
             id: 'env-subscriptions',
             name: 'Subscriptions',
             linkedCategoryId: 'subscriptions',
+            linkedAccountId: null,
             targetAmount: 65,
             targetFrequency: 'monthly',
             color: '#eab308',
@@ -208,6 +214,7 @@
             id: 'env-dining',
             name: 'Dining Out',
             linkedCategoryId: 'dining',
+            linkedAccountId: null,
             targetAmount: 150,
             targetFrequency: 'monthly',
             color: '#ec4899',
@@ -219,6 +226,7 @@
             id: 'env-auto-loan',
             name: 'Auto Loan Payment',
             linkedCategoryId: null,
+            linkedAccountId: 'auto-loan',
             targetAmount: 345,
             targetFrequency: 'monthly',
             color: '#ef4444',
@@ -228,12 +236,25 @@
         },
         {
             id: 'env-emergency',
-            name: 'Emergency Top-Up',
+            name: 'Emergency Fund',
             linkedCategoryId: null,
+            linkedAccountId: 'savings-1',
             targetAmount: 200,
             targetFrequency: 'monthly',
             color: '#14b8a6',
-            accountBalances: { 'savings-1': 100 },
+            accountBalances: { 'checking-1': 100 },
+            ccPending: 0,
+            createdAt: '2026-01-15T12:00:00.000Z'
+        },
+        {
+            id: 'env-cc-chase',
+            name: 'Chase CC Payment',
+            linkedCategoryId: null,
+            linkedAccountId: 'cc-chase',
+            targetAmount: 500,
+            targetFrequency: 'monthly',
+            color: '#3b82f6',
+            accountBalances: { 'checking-1': 250 },
             ccPending: 0,
             createdAt: '2026-01-15T12:00:00.000Z'
         }
@@ -255,7 +276,8 @@
                 'env-subscriptions': 30.00,
                 'env-dining': 69.23,
                 'env-auto-loan': 159.23,
-                'env-emergency': 92.31
+                'env-emergency': 92.31,
+                'env-cc-chase': 230.77
             },
             createdAt: '2026-01-10T12:00:00.000Z'
         },
@@ -300,7 +322,8 @@
                 { envelopeId: 'env-subscriptions', amount: 30.00 },
                 { envelopeId: 'env-dining', amount: 69.23 },
                 { envelopeId: 'env-auto-loan', amount: 159.23 },
-                { envelopeId: 'env-emergency', amount: 92.31 }
+                { envelopeId: 'env-emergency', amount: 92.31 },
+                { envelopeId: 'env-cc-chase', amount: 230.77 }
             ],
             unallocated: 303.06,
             transactionId: 'txn-pay-001',
@@ -338,7 +361,8 @@
                 { envelopeId: 'env-subscriptions', amount: 30.00 },
                 { envelopeId: 'env-dining', amount: 69.23 },
                 { envelopeId: 'env-auto-loan', amount: 159.23 },
-                { envelopeId: 'env-emergency', amount: 92.31 }
+                { envelopeId: 'env-emergency', amount: 92.31 },
+                { envelopeId: 'env-cc-chase', amount: 230.77 }
             ],
             unallocated: 303.06,
             transactionId: 'txn-pay-003',

@@ -12,6 +12,7 @@ class FinanceApp {
             envelopes: [],
             incomeSources: [],
             paycheckHistory: [],
+            billReminders: [],
             settings: { theme: 'light', currency: '$', onboardingComplete: false, userName: '' }
         };
         this.charts = {};
@@ -24,6 +25,9 @@ class FinanceApp {
         this.onboardingStep = 1;
         this.onboardAccounts = [];
         this.onboardIncome = [];
+        this.calendarYear = new Date().getFullYear();
+        this.calendarMonth = new Date().getMonth();
+        this.calendarSelectedDay = null;
 
         this.defaultCategories = [
             { id: 'salary', name: 'Salary', color: '#10b981', type: 'income' },
@@ -386,6 +390,7 @@ class FinanceApp {
             transactions: () => { this.renderTransactions(); this.renderRecurring(); },
             envelopes: () => this.renderEnvelopes(),
             accounts: () => this.renderAccounts(),
+            calendar: () => this.renderCalendar(),
             reports: () => this.renderReports(),
             settings: () => this.renderSettings()
         };
@@ -427,6 +432,7 @@ class FinanceApp {
             'paycheck-form': (e) => this.savePaycheck(e),
             'income-source-form': (e) => this.saveIncomeSource(e),
             'envelope-transfer-form': (e) => this.saveEnvelopeTransfer(e),
+            'bill-reminder-form': (e) => this.saveBillReminder(e),
             'auth-form': (e) => this.handleAuth(e)
         };
         for (const [id, handler] of Object.entries(forms)) {
@@ -581,6 +587,18 @@ class FinanceApp {
             case 'delete-income-source': this.confirmAction('Delete Income Source', 'Delete this income source?', () => this.deleteIncomeSource(id)); break;
             case 'delete-category': this.deleteCategory(id); break;
 
+            // Calendar
+            case 'calendar-prev-month': this.navigateCalendarMonth(-1); break;
+            case 'calendar-next-month': this.navigateCalendarMonth(1); break;
+            case 'calendar-today': this.navigateCalendarToday(); break;
+            case 'calendar-select-day': this.selectCalendarDay(target.dataset.date); break;
+            case 'calendar-jump-to-date': this.jumpCalendarToDate(target.dataset.date); break;
+
+            // Bill Reminders
+            case 'open-bill-reminder': this.openModal('bill-reminder-modal'); break;
+            case 'edit-bill-reminder': this.editBillReminder(id); break;
+            case 'delete-bill-reminder': this.confirmAction('Delete Due Date', 'Delete this due date reminder?', () => this.deleteBillReminder(id)); break;
+
             // Pagination
             case 'prev-page': this.goToTransactionPage(this.transactionPage - 1); break;
             case 'next-page': this.goToTransactionPage(this.transactionPage + 1); break;
@@ -618,6 +636,7 @@ class FinanceApp {
         else if (modalId === 'paycheck-modal') this.populatePaycheckModal();
         else if (modalId === 'income-source-modal') this.populateIncomeSourceAccountDropdown();
         else if (modalId === 'envelope-transfer-modal') this.populateEnvelopeTransferDropdowns();
+        else if (modalId === 'bill-reminder-modal') this.updateReminderAccountDropdown();
 
         setTimeout(() => {
             const focusable = modal.querySelectorAll('input:not([type="hidden"]):not([hidden]), select, textarea, button, [tabindex]:not([tabindex="-1"])');
@@ -646,13 +665,15 @@ class FinanceApp {
 
         const form = modal?.querySelector('form');
         if (form) form.reset();
-        ['transaction-id', 'recurring-id', 'asset-id', 'envelope-id', 'income-source-id'].forEach(id => {
+        ['transaction-id', 'recurring-id', 'asset-id', 'envelope-id', 'income-source-id', 'bill-reminder-id'].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.value = '';
         });
         if (modalId === 'transaction-modal') {
             document.getElementById('trans-expense').checked = true;
             this.updateTransactionAccountFields();
+        } else if (modalId === 'bill-reminder-modal') {
+            document.getElementById('bill-reminder-modal-title').textContent = 'Add Due Date';
         }
     }
 
@@ -2807,6 +2828,429 @@ class FinanceApp {
 
     // ==========================================
     // TOAST
+    // ==========================================
+    // CALENDAR
+    // ==========================================
+
+    getPreviousRecurringDate(date, frequency) {
+        const prev = new Date(date);
+        switch (frequency) {
+            case 'weekly': prev.setDate(prev.getDate() - 7); break;
+            case 'biweekly': prev.setDate(prev.getDate() - 14); break;
+            case 'monthly': prev.setMonth(prev.getMonth() - 1); break;
+            case 'quarterly': prev.setMonth(prev.getMonth() - 3); break;
+            case 'yearly': prev.setFullYear(prev.getFullYear() - 1); break;
+        }
+        return prev;
+    }
+
+    getRecurringOccurrencesForMonth(year, month) {
+        const occurrences = new Map();
+        const monthStart = new Date(year, month, 1);
+        const monthEnd = new Date(year, month + 1, 0);
+        const daysInMonth = monthEnd.getDate();
+
+        this.data.recurring.forEach(rec => {
+            if (!rec.nextDate) return;
+            let d = this.parseDateLocal(rec.nextDate);
+
+            // Walk backward until before month start
+            while (d >= monthStart) {
+                d = this.getPreviousRecurringDate(d, rec.frequency);
+            }
+            // Walk forward, collecting dates in this month
+            d = this.getNextRecurringDate(d, rec.frequency);
+            while (d <= monthEnd) {
+                if (d >= monthStart) {
+                    const day = d.getDate();
+                    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    if (!occurrences.has(day)) occurrences.set(day, []);
+                    occurrences.get(day).push({ recurring: rec, dateStr });
+                }
+                d = this.getNextRecurringDate(d, rec.frequency);
+            }
+        });
+
+        // Bill reminders
+        (this.data.billReminders || []).forEach(rem => {
+            const day = Math.min(rem.dueDay, daysInMonth);
+            let showThisMonth = false;
+            if (rem.frequency === 'monthly') {
+                showThisMonth = true;
+            } else if (rem.frequency === 'quarterly') {
+                // Show every 3 months based on createdAt month, or January if no createdAt
+                const refMonth = rem.createdAt ? new Date(rem.createdAt).getMonth() : 0;
+                showThisMonth = (month - refMonth + 12) % 3 === 0;
+            } else if (rem.frequency === 'yearly') {
+                const refMonth = rem.createdAt ? new Date(rem.createdAt).getMonth() : 0;
+                showThisMonth = month === refMonth;
+            }
+            if (showThisMonth) {
+                const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                if (!occurrences.has(day)) occurrences.set(day, []);
+                occurrences.get(day).push({ reminder: rem, dateStr });
+            }
+        });
+
+        return occurrences;
+    }
+
+    navigateCalendarMonth(delta) {
+        this.calendarMonth += delta;
+        if (this.calendarMonth > 11) { this.calendarMonth = 0; this.calendarYear++; }
+        else if (this.calendarMonth < 0) { this.calendarMonth = 11; this.calendarYear--; }
+        this.calendarSelectedDay = null;
+        this.renderCalendar();
+    }
+
+    navigateCalendarToday() {
+        const now = new Date();
+        this.calendarYear = now.getFullYear();
+        this.calendarMonth = now.getMonth();
+        this.calendarSelectedDay = null;
+        this.renderCalendar();
+    }
+
+    jumpCalendarToDate(dateStr) {
+        const d = this.parseDateLocal(dateStr);
+        this.calendarYear = d.getFullYear();
+        this.calendarMonth = d.getMonth();
+        this.calendarSelectedDay = dateStr;
+        this.navigateTo('calendar');
+    }
+
+    renderCalendar() {
+        const grid = document.getElementById('calendar-grid');
+        const label = document.getElementById('calendar-month-label');
+        if (!grid || !label) return;
+
+        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'];
+        label.textContent = `${monthNames[this.calendarMonth]} ${this.calendarYear}`;
+
+        const occurrences = this.getRecurringOccurrencesForMonth(this.calendarYear, this.calendarMonth);
+
+        const firstDay = new Date(this.calendarYear, this.calendarMonth, 1).getDay();
+        const daysInMonth = new Date(this.calendarYear, this.calendarMonth + 1, 0).getDate();
+        const daysInPrevMonth = new Date(this.calendarYear, this.calendarMonth, 0).getDate();
+
+        const today = new Date();
+        const todayStr = this.todayLocal();
+
+        let html = '<div class="calendar-header-row">';
+        ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach(d => {
+            html += `<div class="calendar-weekday">${d}</div>`;
+        });
+        html += '</div><div class="calendar-days">';
+
+        // Previous month trailing days
+        for (let i = firstDay - 1; i >= 0; i--) {
+            const day = daysInPrevMonth - i;
+            html += `<div class="calendar-day outside"><span class="calendar-day-number">${day}</span></div>`;
+        }
+
+        // Current month days
+        for (let day = 1; day <= daysInMonth; day++) {
+            const dateStr = `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            const isToday = dateStr === todayStr;
+            const isSelected = dateStr === this.calendarSelectedDay;
+            const dayOccurrences = occurrences.get(day) || [];
+
+            let classes = 'calendar-day';
+            if (isToday) classes += ' today';
+            if (isSelected) classes += ' selected';
+            if (dayOccurrences.length > 0) classes += ' has-bills';
+
+            let dots = '';
+            let totalAmount = 0;
+            if (dayOccurrences.length > 0) {
+                dots = '<div class="calendar-dots">';
+                dayOccurrences.forEach(occ => {
+                    if (occ.recurring) {
+                        const cat = this.getCategoryById(occ.recurring.categoryId);
+                        dots += `<span class="calendar-dot" style="background:${cat.color}" title="${this.escapeHtml(occ.recurring.name)}"></span>`;
+                        totalAmount += occ.recurring.amount;
+                    } else if (occ.reminder) {
+                        dots += `<span class="calendar-dot" style="background:${occ.reminder.color || '#3b82f6'}" title="${this.escapeHtml(occ.reminder.name)}"></span>`;
+                        totalAmount += occ.reminder.amount || 0;
+                    }
+                });
+                dots += '</div>';
+            }
+
+            const amountLabel = totalAmount > 0 ? `<span class="calendar-day-amount">${this.formatCurrency(totalAmount)}</span>` : '';
+
+            html += `<div class="${classes}" data-action="calendar-select-day" data-date="${dateStr}">
+                <span class="calendar-day-number${isToday ? ' today-circle' : ''}">${day}</span>
+                ${dots}${amountLabel}
+            </div>`;
+        }
+
+        // Next month leading days
+        const totalCells = firstDay + daysInMonth;
+        const remaining = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
+        for (let i = 1; i <= remaining; i++) {
+            html += `<div class="calendar-day outside"><span class="calendar-day-number">${i}</span></div>`;
+        }
+
+        html += '</div>';
+        grid.innerHTML = html;
+
+        this.renderCalendarUpcoming();
+        const detail = document.getElementById('calendar-day-detail');
+        if (this.calendarSelectedDay) {
+            this.renderCalendarDayDetail(this.calendarSelectedDay);
+            if (detail) detail.style.display = '';
+        } else {
+            if (detail) detail.style.display = 'none';
+        }
+    }
+
+    selectCalendarDay(dateStr) {
+        if (this.calendarSelectedDay === dateStr) {
+            this.calendarSelectedDay = null;
+        } else {
+            this.calendarSelectedDay = dateStr;
+        }
+        // Update visual selection without full re-render
+        document.querySelectorAll('#calendar-grid .calendar-day').forEach(el => {
+            el.classList.toggle('selected', el.dataset.date === this.calendarSelectedDay);
+        });
+        const detail = document.getElementById('calendar-day-detail');
+        if (this.calendarSelectedDay) {
+            this.renderCalendarDayDetail(this.calendarSelectedDay);
+            if (detail) detail.style.display = '';
+        } else {
+            if (detail) detail.style.display = 'none';
+        }
+    }
+
+    renderCalendarDayDetail(dateStr) {
+        const container = document.getElementById('calendar-detail-list');
+        const title = document.getElementById('calendar-detail-title');
+        if (!container) return;
+
+        const d = this.parseDateLocal(dateStr);
+        const day = d.getDate();
+        title.textContent = `Bills Due - ${d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}`;
+
+        const occurrences = this.getRecurringOccurrencesForMonth(d.getFullYear(), d.getMonth());
+        const dayItems = occurrences.get(day) || [];
+
+        if (!dayItems.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-check"></i><p>No bills due on this day</p></div>';
+            return;
+        }
+
+        let total = 0;
+        let html = dayItems.map(occ => {
+            if (occ.recurring) {
+                const cat = this.getCategoryById(occ.recurring.categoryId);
+                const freq = occ.recurring.frequency.charAt(0).toUpperCase() + occ.recurring.frequency.slice(1);
+                total += occ.recurring.amount;
+                return `<div class="calendar-bill-item">
+                    <div class="calendar-bill-icon" style="background:${cat.color}20;color:${cat.color}">
+                        <i class="fas fa-${occ.recurring.type === 'income' ? 'arrow-down' : 'file-invoice-dollar'}"></i>
+                    </div>
+                    <div class="calendar-bill-info">
+                        <span class="calendar-bill-name">${this.escapeHtml(occ.recurring.name)}</span>
+                        <span class="calendar-bill-meta">${this.escapeHtml(cat.name)} &middot; ${freq}</span>
+                    </div>
+                    <span class="calendar-bill-amount ${occ.recurring.type === 'income' ? 'positive' : ''}">${occ.recurring.type === 'income' ? '+' : '-'}${this.formatCurrency(occ.recurring.amount)}</span>
+                </div>`;
+            } else if (occ.reminder) {
+                const rem = occ.reminder;
+                const freq = rem.frequency.charAt(0).toUpperCase() + rem.frequency.slice(1);
+                const acct = rem.accountId ? this.data.assets.find(a => a.id === rem.accountId) : null;
+                const acctLabel = acct ? ` &middot; ${this.escapeHtml(acct.name)}` : '';
+                total += rem.amount || 0;
+                return `<div class="calendar-bill-item">
+                    <div class="calendar-bill-icon" style="background:${rem.color}20;color:${rem.color}">
+                        <i class="fas fa-bell"></i>
+                    </div>
+                    <div class="calendar-bill-info">
+                        <span class="calendar-bill-name">${this.escapeHtml(rem.name)} <span class="reminder-badge">Due Date</span></span>
+                        <span class="calendar-bill-meta">${freq}${acctLabel}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        ${rem.amount ? `<span class="calendar-bill-amount">${this.formatCurrency(rem.amount)}</span>` : ''}
+                        <button class="btn-icon" data-action="edit-bill-reminder" data-id="${rem.id}" aria-label="Edit due date"><i class="fas fa-pen"></i></button>
+                        <button class="btn-icon delete" data-action="delete-bill-reminder" data-id="${rem.id}" aria-label="Delete due date"><i class="fas fa-trash"></i></button>
+                    </div>
+                </div>`;
+            }
+            return '';
+        }).join('');
+
+        html += `<div class="calendar-bill-total">
+            <span>Total</span>
+            <span>${this.formatCurrency(total)}</span>
+        </div>`;
+
+        container.innerHTML = html;
+    }
+
+    renderCalendarUpcoming() {
+        const container = document.getElementById('calendar-upcoming-list');
+        if (!container) return;
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const sixMonthsOut = new Date(today);
+        sixMonthsOut.setMonth(sixMonthsOut.getMonth() + 6);
+
+        const upcoming = [];
+        this.data.recurring.forEach(rec => {
+            if (!rec.nextDate) return;
+            let d = this.parseDateLocal(rec.nextDate);
+            // Walk forward from nextDate collecting up to 10 total occurrences
+            let count = 0;
+            while (d <= sixMonthsOut && count < 10) {
+                if (d >= today) {
+                    upcoming.push({
+                        recurring: rec,
+                        date: new Date(d),
+                        dateStr: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+                    });
+                    count++;
+                }
+                d = this.getNextRecurringDate(d, rec.frequency);
+            }
+        });
+
+        // Bill reminders upcoming
+        (this.data.billReminders || []).forEach(rem => {
+            let d = new Date(today);
+            for (let i = 0; i < 12 && d <= sixMonthsOut; i++) {
+                const yr = d.getFullYear();
+                const mo = d.getMonth();
+                let showThisMonth = false;
+                if (rem.frequency === 'monthly') {
+                    showThisMonth = true;
+                } else if (rem.frequency === 'quarterly') {
+                    const refMonth = rem.createdAt ? new Date(rem.createdAt).getMonth() : 0;
+                    showThisMonth = (mo - refMonth + 12) % 3 === 0;
+                } else if (rem.frequency === 'yearly') {
+                    const refMonth = rem.createdAt ? new Date(rem.createdAt).getMonth() : 0;
+                    showThisMonth = mo === refMonth;
+                }
+                if (showThisMonth) {
+                    const daysInMo = new Date(yr, mo + 1, 0).getDate();
+                    const day = Math.min(rem.dueDay, daysInMo);
+                    const occDate = new Date(yr, mo, day);
+                    if (occDate >= today && occDate <= sixMonthsOut) {
+                        upcoming.push({
+                            reminder: rem,
+                            date: occDate,
+                            dateStr: `${yr}-${String(mo + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+                        });
+                    }
+                }
+                d = new Date(yr, mo + 1, 1);
+            }
+        });
+
+        upcoming.sort((a, b) => a.date - b.date);
+        const display = upcoming.slice(0, 15);
+
+        if (!display.length) {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-check"></i><p>No upcoming bills</p></div>';
+            return;
+        }
+
+        container.innerHTML = display.map(item => {
+            const days = Math.ceil((item.date - today) / 86400000);
+            let urgClass = '';
+            if (days <= 3) urgClass = 'urgent';
+            else if (days <= 7) urgClass = 'soon';
+
+            const dateLabel = days <= 0 ? 'Today' : days === 1 ? 'Tomorrow' : `In ${days} days`;
+            const dateFormatted = item.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+            if (item.recurring) {
+                const cat = this.getCategoryById(item.recurring.categoryId);
+                return `<div class="calendar-upcoming-item ${urgClass}" data-action="calendar-jump-to-date" data-date="${item.dateStr}">
+                    <div class="calendar-upcoming-dot" style="background:${cat.color}"></div>
+                    <div class="calendar-upcoming-info">
+                        <span class="calendar-upcoming-name">${this.escapeHtml(item.recurring.name)}</span>
+                        <span class="calendar-upcoming-date">${dateFormatted} &middot; ${dateLabel}</span>
+                    </div>
+                    <span class="calendar-upcoming-amount">${this.formatCurrency(item.recurring.amount)}</span>
+                </div>`;
+            } else if (item.reminder) {
+                return `<div class="calendar-upcoming-item ${urgClass}" data-action="calendar-jump-to-date" data-date="${item.dateStr}">
+                    <div class="calendar-upcoming-dot" style="background:${item.reminder.color || '#3b82f6'}"></div>
+                    <div class="calendar-upcoming-info">
+                        <span class="calendar-upcoming-name">${this.escapeHtml(item.reminder.name)} <span class="reminder-badge">Due Date</span></span>
+                        <span class="calendar-upcoming-date">${dateFormatted} &middot; ${dateLabel}</span>
+                    </div>
+                    ${item.reminder.amount ? `<span class="calendar-upcoming-amount">${this.formatCurrency(item.reminder.amount)}</span>` : ''}
+                </div>`;
+            }
+            return '';
+        }).join('');
+    }
+
+    // ==========================================
+    // BILL REMINDERS
+    // ==========================================
+
+    updateReminderAccountDropdown() {
+        const sel = document.getElementById('reminder-account');
+        if (!sel) return;
+        const current = sel.value;
+        sel.innerHTML = '<option value="">None</option>';
+        this.data.assets.forEach(a => {
+            sel.innerHTML += `<option value="${a.id}">${this.escapeHtml(a.name)} (${this.formatAccountType(a.category)})</option>`;
+        });
+        sel.value = current;
+    }
+
+    saveBillReminder(event) {
+        event.preventDefault();
+        const id = document.getElementById('bill-reminder-id').value || this.generateId();
+        const name = document.getElementById('reminder-name').value.trim();
+        const amount = parseFloat(document.getElementById('reminder-amount').value) || 0;
+        const dueDay = parseInt(document.getElementById('reminder-due-day').value);
+        const frequency = document.getElementById('reminder-frequency').value;
+        const color = document.getElementById('reminder-color').value;
+        const accountId = document.getElementById('reminder-account').value || null;
+        const notes = document.getElementById('reminder-notes').value.trim();
+
+        if (!name) { this.showToast('Name cannot be empty', 'error'); return; }
+        if (!dueDay || dueDay < 1 || dueDay > 31) { this.showToast('Due day must be between 1 and 31', 'error'); return; }
+
+        const reminder = { id, name, amount, dueDay, frequency, color, accountId, notes, createdAt: new Date().toISOString() };
+        const idx = this.data.billReminders.findIndex(r => r.id === id);
+        if (idx > -1) { this.data.billReminders[idx] = reminder; this.showToast('Due date updated', 'success'); }
+        else { this.data.billReminders.push(reminder); this.showToast('Due date added', 'success'); }
+        this.saveData();
+        this.closeModal('bill-reminder-modal');
+        this.renderCalendar();
+    }
+
+    editBillReminder(id) {
+        const r = this.data.billReminders.find(r => r.id === id);
+        if (!r) return;
+        document.getElementById('bill-reminder-id').value = r.id;
+        document.getElementById('bill-reminder-modal-title').textContent = 'Edit Due Date';
+        document.getElementById('reminder-name').value = r.name;
+        document.getElementById('reminder-amount').value = r.amount || '';
+        document.getElementById('reminder-due-day').value = r.dueDay;
+        document.getElementById('reminder-frequency').value = r.frequency;
+        document.getElementById('reminder-color').value = r.color || '#3b82f6';
+        document.getElementById('reminder-notes').value = r.notes || '';
+        this.openModal('bill-reminder-modal');
+        document.getElementById('reminder-account').value = r.accountId || '';
+    }
+
+    deleteBillReminder(id) {
+        this.data.billReminders = this.data.billReminders.filter(r => r.id !== id);
+        this.saveData();
+        this.renderCalendar();
+        this.showToast('Due date deleted', 'success');
+    }
+
     // ==========================================
 
     showToast(message, type = 'success') {
