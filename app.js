@@ -13,7 +13,14 @@ class FinanceApp {
             incomeSources: [],
             paycheckHistory: [],
             billReminders: [],
-            settings: { theme: 'light', currency: '$', onboardingComplete: false, userName: '' }
+            debtPayoffPlan: {
+                strategy: 'avalanche',
+                extraPayment: 0,
+                debtIds: [],
+                createdAt: null,
+                updatedAt: null
+            },
+            settings: { theme: 'light', currency: '$', onboardingComplete: false, userName: '', financialProfile: 'none', debtPayoffComplete: false }
         };
         this.charts = {};
         this.currentUser = null;
@@ -23,6 +30,8 @@ class FinanceApp {
         this.transactionPage = 1;
         this.transactionsPerPage = 25;
         this.onboardingStep = 1;
+        this.onboardingProfile = 'none';
+        this.onboardDebts = [];
         this.onboardAccounts = [];
         this.onboardIncome = [];
         this.calendarYear = new Date().getFullYear();
@@ -137,7 +146,16 @@ class FinanceApp {
     }
 
     migrateData() {
-        if (this.data.version === 2) return;
+        // Always ensure new fields exist (even for v2 data)
+        if (!this.data.settings) this.data.settings = {};
+        if (!this.data.settings.financialProfile) this.data.settings.financialProfile = 'none';
+        if (this.data.settings.debtPayoffComplete === undefined) this.data.settings.debtPayoffComplete = false;
+        if (!this.data.debtPayoffPlan) {
+            this.data.debtPayoffPlan = { strategy: 'avalanche', extraPayment: 0, debtIds: [], createdAt: null, updatedAt: null };
+        }
+        if (!this.data.billReminders) this.data.billReminders = [];
+
+        if (this.data.version === 2) { this.saveDataLocal(); return; }
 
         // Migrate envelopes: accountBalances+ccPending → single balance
         (this.data.envelopes || []).forEach(env => {
@@ -194,6 +212,13 @@ class FinanceApp {
         if (!this.data.settings) this.data.settings = {};
         if (this.data.settings.onboardingComplete === undefined) this.data.settings.onboardingComplete = true;
         if (!this.data.settings.userName) this.data.settings.userName = '';
+        if (!this.data.settings.financialProfile) this.data.settings.financialProfile = 'none';
+        if (this.data.settings.debtPayoffComplete === undefined) this.data.settings.debtPayoffComplete = false;
+
+        // Ensure debtPayoffPlan exists
+        if (!this.data.debtPayoffPlan) {
+            this.data.debtPayoffPlan = { strategy: 'avalanche', extraPayment: 0, debtIds: [], createdAt: null, updatedAt: null };
+        }
 
         this.data.version = 2;
         this.saveDataLocal();
@@ -387,6 +412,7 @@ class FinanceApp {
     renderPageContent(page) {
         const renderers = {
             dashboard: () => this.renderDashboard(),
+            debt: () => this.renderDebtPayoff(),
             transactions: () => { this.renderTransactions(); this.renderRecurring(); },
             envelopes: () => this.renderEnvelopes(),
             accounts: () => this.renderAccounts(),
@@ -395,6 +421,22 @@ class FinanceApp {
             settings: () => this.renderSettings()
         };
         if (renderers[page]) renderers[page]();
+    }
+
+    updateNavVisibility() {
+        const plan = this.data.debtPayoffPlan;
+        const showDebt = this.data.settings.financialProfile === 'debt-payoff' ||
+            (plan && plan.debtIds && plan.debtIds.length > 0 && !this.data.settings.debtPayoffComplete);
+
+        const navDebt = document.getElementById('nav-debt');
+        const mobileNavDebt = document.getElementById('mobile-nav-debt');
+        const mobileNavEnvelopes = document.getElementById('mobile-nav-envelopes');
+
+        if (navDebt) navDebt.style.display = showDebt ? '' : 'none';
+        if (mobileNavDebt) mobileNavDebt.style.display = showDebt ? '' : 'none';
+        // On mobile, if debt is shown, hide envelopes to keep nav manageable (still accessible from sidebar)
+        if (mobileNavEnvelopes && showDebt) mobileNavEnvelopes.style.display = 'none';
+        if (mobileNavEnvelopes && !showDebt) mobileNavEnvelopes.style.display = '';
     }
 
     toggleSidebar() { document.querySelector('.sidebar').classList.toggle('open'); }
@@ -433,7 +475,8 @@ class FinanceApp {
             'income-source-form': (e) => this.saveIncomeSource(e),
             'envelope-transfer-form': (e) => this.saveEnvelopeTransfer(e),
             'bill-reminder-form': (e) => this.saveBillReminder(e),
-            'auth-form': (e) => this.handleAuth(e)
+            'auth-form': (e) => this.handleAuth(e),
+            'edit-debt-plan-form': (e) => this.saveEditDebtPlan(e)
         };
         for (const [id, handler] of Object.entries(forms)) {
             const form = document.getElementById(id);
@@ -524,6 +567,17 @@ class FinanceApp {
         // Sidebar overlay
         const overlay = document.querySelector('.sidebar-overlay');
         if (overlay) overlay.addEventListener('click', () => this.closeSidebar());
+
+        // Strategy selection in onboarding
+        document.querySelectorAll('input[name="onboard-strategy"]').forEach(r => {
+            r.addEventListener('change', () => {
+                document.querySelectorAll('.strategy-card').forEach(c => c.classList.remove('active'));
+                r.closest('.strategy-card').classList.add('active');
+                this.renderOnboardDebtOrderPreview();
+            });
+        });
+        const extraPayInput = document.getElementById('onboard-extra-payment');
+        if (extraPayInput) extraPayInput.addEventListener('input', () => this.renderOnboardDebtOrderPreview());
     }
 
     handleAction(action, target) {
@@ -533,10 +587,14 @@ class FinanceApp {
             case 'skip': this.onboardingSkip(); break;
             case 'next': this.onboardingNext(); break;
             case 'finish': this.onboardingFinish(); break;
+            case 'onboard-back': this.onboardingBack(); break;
+            case 'select-profile': this.selectOnboardingProfile(target.dataset.profile); break;
             case 'add-account': this.addOnboardAccount(); break;
             case 'add-income': this.addOnboardIncome(); break;
+            case 'add-debt': this.addOnboardDebt(); break;
             case 'remove-onboard-account': this.removeOnboardAccount(parseInt(target.dataset.index)); break;
             case 'remove-onboard-income': this.removeOnboardIncome(parseInt(target.dataset.index)); break;
+            case 'remove-onboard-debt': this.removeOnboardDebt(parseInt(target.dataset.index)); break;
 
             // Navigation
             case 'toggle-sidebar': this.toggleSidebar(); break;
@@ -602,6 +660,11 @@ class FinanceApp {
             // Pagination
             case 'prev-page': this.goToTransactionPage(this.transactionPage - 1); break;
             case 'next-page': this.goToTransactionPage(this.transactionPage + 1); break;
+
+            // Debt Payoff
+            case 'open-edit-debt-plan': this.openEditDebtPlan(); break;
+            case 'debt-make-payment': this.openAccountAction(id, 'pay'); break;
+            case 'start-envelope-transition': this.startEnvelopeTransition(); break;
 
             // Settings
             case 'add-category': this.addCategory(); break;
@@ -719,8 +782,24 @@ class FinanceApp {
     // ONBOARDING
     // ==========================================
 
+    getOnboardingSteps() {
+        if (this.onboardingProfile === 'debt-payoff') {
+            return ['1', '2', 'debt-3', 'debt-4', 'debt-5', 'debt-6'];
+        } else if (this.onboardingProfile === 'envelope-ready') {
+            return ['1', '2', 'env-3', 'env-4', 'env-5', 'env-6'];
+        }
+        return ['1', '2'];
+    }
+
+    getCurrentStepId() {
+        const steps = this.getOnboardingSteps();
+        return steps[this.onboardingStep - 1] || '1';
+    }
+
     showOnboarding() {
         this.onboardingStep = 1;
+        this.onboardingProfile = 'none';
+        this.onboardDebts = [];
         this.onboardAccounts = [];
         this.onboardIncome = [];
         document.getElementById('onboarding-overlay').style.display = 'flex';
@@ -728,37 +807,92 @@ class FinanceApp {
     }
 
     updateOnboardingStep() {
-        document.querySelectorAll('.onboarding-step').forEach(s => s.classList.toggle('active', parseInt(s.dataset.step) === this.onboardingStep));
-        document.querySelectorAll('.onboarding-dot').forEach(d => {
-            const step = parseInt(d.dataset.step);
-            d.classList.toggle('active', step <= this.onboardingStep);
+        const steps = this.getOnboardingSteps();
+        const currentStepId = this.getCurrentStepId();
+
+        // Render dynamic dots
+        const progressEl = document.getElementById('onboarding-progress');
+        progressEl.innerHTML = steps.map((s, i) =>
+            `<span class="onboarding-dot${i < this.onboardingStep ? ' active' : ''}" data-step="${s}"></span>`
+        ).join('');
+
+        // Show the active step
+        document.querySelectorAll('.onboarding-step').forEach(s => {
+            s.classList.toggle('active', s.dataset.step === currentStepId);
         });
     }
 
+    selectOnboardingProfile(profile) {
+        this.onboardingProfile = profile;
+        this.data.settings.financialProfile = profile;
+        this.saveData();
+        this.onboardingStep = 3;
+        this.updateOnboardingStep();
+
+        if (profile === 'debt-payoff') {
+            this.renderOnboardDebtsList();
+        }
+    }
+
     onboardingNext() {
+        const currentStepId = this.getCurrentStepId();
+
         // Save current step data
-        if (this.onboardingStep === 1) {
+        if (currentStepId === '1') {
             const name = document.getElementById('onboard-name').value.trim();
             const activeTheme = document.querySelector('.theme-choice.active');
             if (name) this.data.settings.userName = name;
             if (activeTheme) { this.data.settings.theme = activeTheme.dataset.theme; this.applyTheme(activeTheme.dataset.theme); }
             this.saveData();
-        } else if (this.onboardingStep === 3) {
+        } else if (currentStepId === 'debt-3') {
+            if (this.onboardDebts.length === 0) { this.showToast('Add at least one debt', 'error'); return; }
+        } else if (currentStepId === 'debt-4') {
+            this.saveOnboardDebtStrategy();
+            this.renderOnboardPlanReview();
+        } else if (currentStepId === 'debt-5') {
+            this.renderOnboardDebtSummary();
+        } else if (currentStepId === 'env-4') {
             this.saveOnboardEnvelopes();
-        } else if (this.onboardingStep === 4) {
+        } else if (currentStepId === 'env-5') {
             this.populateOnboardIncomeAccounts();
         }
 
-        if (this.onboardingStep === 4) {
+        // Prepare next step
+        const steps = this.getOnboardingSteps();
+        const nextStepId = steps[this.onboardingStep];
+        if (nextStepId === 'env-5') {
+            this.populateOnboardIncomeAccounts();
+        }
+        if (nextStepId === 'env-6') {
             this.renderOnboardSummary();
         }
+        if (nextStepId === 'debt-4') {
+            this.renderOnboardDebtOrderPreview();
+        }
 
-        this.onboardingStep = Math.min(this.onboardingStep + 1, 5);
+        this.onboardingStep = Math.min(this.onboardingStep + 1, steps.length);
+        this.updateOnboardingStep();
+    }
+
+    onboardingBack() {
+        if (this.onboardingStep <= 1) return;
+        const steps = this.getOnboardingSteps();
+        const prevStepId = steps[this.onboardingStep - 2];
+
+        // If going back to step 2 (profile selection), reset profile
+        if (prevStepId === '2') {
+            this.onboardingProfile = 'none';
+        }
+
+        this.onboardingStep = Math.max(this.onboardingStep - 1, 1);
         this.updateOnboardingStep();
     }
 
     onboardingSkip() {
         this.data.settings.onboardingComplete = true;
+        if (this.data.settings.financialProfile === 'none') {
+            this.data.settings.financialProfile = 'envelope-ready';
+        }
         this.saveData();
         document.getElementById('onboarding-overlay').style.display = 'none';
         this.renderAll();
@@ -771,7 +905,169 @@ class FinanceApp {
         document.getElementById('onboarding-overlay').style.display = 'none';
         this.renderAll();
         this.updateDateDisplay();
-        this.showToast('Welcome to FinanceFlow!', 'success');
+        if (this.onboardingProfile === 'debt-payoff') {
+            this.showToast('Your debt payoff plan is ready!', 'success');
+        } else {
+            this.showToast('Welcome to FinanceFlow!', 'success');
+        }
+    }
+
+    // Debt onboarding methods
+    addOnboardDebt() {
+        const type = document.getElementById('onboard-debt-type').value;
+        const name = document.getElementById('onboard-debt-name').value.trim();
+        const balance = parseFloat(document.getElementById('onboard-debt-balance').value) || 0;
+        const rate = parseFloat(document.getElementById('onboard-debt-rate').value) || 0;
+        const minPayment = parseFloat(document.getElementById('onboard-debt-min').value) || 0;
+        if (!name) { this.showToast('Enter a debt name', 'error'); return; }
+        if (balance <= 0) { this.showToast('Enter the balance owed', 'error'); return; }
+
+        const debt = {
+            id: this.generateId(), type: 'liability', name, value: balance,
+            category: type, notes: '', interestRate: rate, minPayment: minPayment,
+            originalAmount: balance, contributions: [], payments: [], withdrawals: [],
+            updatedAt: new Date().toISOString()
+        };
+        this.data.assets.push(debt);
+        this.onboardDebts.push(debt);
+        this.saveData();
+
+        document.getElementById('onboard-debt-name').value = '';
+        document.getElementById('onboard-debt-balance').value = '';
+        document.getElementById('onboard-debt-rate').value = '';
+        document.getElementById('onboard-debt-min').value = '';
+        this.renderOnboardDebtsList();
+    }
+
+    removeOnboardDebt(index) {
+        if (index >= 0 && index < this.onboardDebts.length) {
+            const removed = this.onboardDebts.splice(index, 1)[0];
+            this.data.assets = this.data.assets.filter(a => a.id !== removed.id);
+            this.saveData();
+            this.renderOnboardDebtsList();
+        }
+    }
+
+    renderOnboardDebtsList() {
+        const container = document.getElementById('onboard-debts-list');
+        container.innerHTML = this.onboardDebts.map((d, i) => `
+            <div class="onboard-account-item">
+                <span>${this.escapeHtml(d.name)}</span>
+                <span>${this.formatCurrency(d.value)}</span>
+                <span class="text-muted">${d.interestRate ? d.interestRate + '% APR' : 'No rate'}</span>
+                <button class="btn-icon delete" data-action="remove-onboard-debt" data-index="${i}"><i class="fas fa-times"></i></button>
+            </div>
+        `).join('');
+
+        // Show/hide details fields when there are debts
+        const detailsEl = document.getElementById('onboard-debt-details');
+        if (detailsEl) detailsEl.style.display = 'block';
+    }
+
+    sortDebtsByStrategy(debts, strategy) {
+        const sorted = [...debts];
+        if (strategy === 'snowball') {
+            sorted.sort((a, b) => a.value - b.value);
+        } else {
+            sorted.sort((a, b) => (b.interestRate || 0) - (a.interestRate || 0));
+        }
+        return sorted;
+    }
+
+    saveOnboardDebtStrategy() {
+        const strategy = document.querySelector('input[name="onboard-strategy"]:checked')?.value || 'avalanche';
+        const extra = parseFloat(document.getElementById('onboard-extra-payment').value) || 0;
+
+        // Use onboardDebts directly since debtIds isn't populated yet
+        const ordered = this.sortDebtsByStrategy(this.onboardDebts, strategy);
+        this.data.debtPayoffPlan.strategy = strategy;
+        this.data.debtPayoffPlan.extraPayment = extra;
+        this.data.debtPayoffPlan.debtIds = ordered.map(d => d.id);
+        this.data.debtPayoffPlan.createdAt = new Date().toISOString();
+        this.data.debtPayoffPlan.updatedAt = new Date().toISOString();
+        this.saveData();
+    }
+
+    renderOnboardDebtOrderPreview() {
+        const container = document.getElementById('onboard-debt-order-preview');
+        if (!container || !this.onboardDebts.length) return;
+        const strategy = document.querySelector('input[name="onboard-strategy"]:checked')?.value || 'avalanche';
+        const ordered = this.sortDebtsByStrategy(this.onboardDebts, strategy);
+        container.innerHTML = '<h4>Payoff order:</h4>' + ordered.map((d, i) => `
+            <div class="onboard-debt-order-item">
+                <span class="debt-order-num">${i + 1}</span>
+                <span>${this.escapeHtml(d.name)}</span>
+                <span>${this.formatCurrency(d.value)}</span>
+                <span class="text-muted">${d.interestRate || 0}% APR</span>
+            </div>
+        `).join('');
+    }
+
+    renderOnboardPlanReview() {
+        const container = document.getElementById('onboard-plan-review');
+        if (!container) return;
+        const debts = this.sortDebtsByStrategy(this.onboardDebts, this.data.debtPayoffPlan.strategy);
+        const extra = this.data.debtPayoffPlan.extraPayment || 0;
+        const projection = this.projectPayoff(debts, extra);
+        const totalDebt = debts.reduce((s, d) => s + d.value, 0);
+        const totalMinPayments = debts.reduce((s, d) => s + (d.minPayment || 0), 0);
+
+        const payoffDate = new Date();
+        payoffDate.setMonth(payoffDate.getMonth() + projection.months);
+        const dateStr = payoffDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+        container.innerHTML = `
+            <div class="plan-review-stats">
+                <div class="plan-stat">
+                    <div class="plan-stat-value">${this.formatCurrency(totalDebt)}</div>
+                    <div class="plan-stat-label">Total Debt</div>
+                </div>
+                <div class="plan-stat">
+                    <div class="plan-stat-value">${this.formatCurrency(totalMinPayments + extra)}</div>
+                    <div class="plan-stat-label">Monthly Payment</div>
+                </div>
+                <div class="plan-stat">
+                    <div class="plan-stat-value">${projection.months} months</div>
+                    <div class="plan-stat-label">Time to Debt-Free</div>
+                </div>
+                <div class="plan-stat">
+                    <div class="plan-stat-value">${dateStr}</div>
+                    <div class="plan-stat-label">Projected Debt-Free</div>
+                </div>
+            </div>
+            <div class="plan-review-interest">
+                <i class="fas fa-info-circle"></i> Total interest you'll pay: <strong>${this.formatCurrency(projection.totalInterest)}</strong>
+            </div>
+            <h4>Payoff Order</h4>
+            <div class="plan-review-debts">
+                ${debts.map((d, i) => `
+                    <div class="plan-review-debt-item">
+                        <span class="debt-order-num">${i + 1}</span>
+                        <div class="plan-review-debt-info">
+                            <strong>${this.escapeHtml(d.name)}</strong>
+                            <span class="text-muted">${this.formatCurrency(d.value)} at ${d.interestRate || 0}%</span>
+                        </div>
+                        ${i === 0 ? '<span class="focus-badge">FOCUS</span>' : ''}
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    renderOnboardDebtSummary() {
+        const el = document.getElementById('onboard-debt-summary');
+        if (!el) return;
+        const debts = this.onboardDebts.length;
+        const totalDebt = this.onboardDebts.reduce((s, d) => s + d.value, 0);
+        const strategy = this.data.debtPayoffPlan.strategy;
+        const strategyLabel = strategy === 'avalanche' ? 'Avalanche (highest interest first)' : 'Snowball (smallest balance first)';
+
+        el.innerHTML = `
+            <div class="onboard-summary-item"><i class="fas fa-file-invoice-dollar"></i> <strong>${debts}</strong> debt${debts !== 1 ? 's' : ''} totaling <strong>${this.formatCurrency(totalDebt)}</strong></div>
+            <div class="onboard-summary-item"><i class="fas fa-chess-knight"></i> Strategy: <strong>${strategyLabel}</strong></div>
+            <div class="onboard-summary-item"><i class="fas fa-plus-circle"></i> Extra payment: <strong>${this.formatCurrency(this.data.debtPayoffPlan.extraPayment)}/mo</strong></div>
+            <div class="onboard-summary-item"><i class="fas fa-bullseye"></i> Your Debt Payoff dashboard is ready</div>
+        `;
     }
 
     addOnboardAccount() {
@@ -1550,6 +1846,354 @@ class FinanceApp {
     }
 
     // ==========================================
+    // DEBT PAYOFF ENGINE
+    // ==========================================
+
+    getPayoffOrder() {
+        const plan = this.data.debtPayoffPlan;
+        const debts = this.data.assets.filter(a => a.type === 'liability' && plan.debtIds.includes(a.id));
+
+        if (plan.strategy === 'snowball') {
+            debts.sort((a, b) => a.value - b.value);
+        } else {
+            debts.sort((a, b) => (b.interestRate || 0) - (a.interestRate || 0));
+        }
+        return debts;
+    }
+
+    projectPayoff(debts, extraPayment) {
+        if (!debts.length) return { months: 0, totalInterest: 0, totalPaid: 0, timeline: [] };
+
+        // Clone balances so we don't mutate actual data
+        const balances = {};
+        const rates = {};
+        const minimums = {};
+        debts.forEach(d => {
+            balances[d.id] = d.value;
+            rates[d.id] = (d.interestRate || 0) / 100 / 12;
+            minimums[d.id] = d.minPayment || 0;
+        });
+
+        let months = 0;
+        let totalInterest = 0;
+        let totalPaid = 0;
+        const timeline = [];
+        let freedAmount = 0;
+
+        while (months < 360) {
+            const activeIds = debts.filter(d => balances[d.id] > 0.01).map(d => d.id);
+            if (activeIds.length === 0) break;
+
+            months++;
+            const monthBalances = {};
+
+            // Pay minimum on all active debts
+            for (const id of activeIds) {
+                const interest = balances[id] * rates[id];
+                totalInterest += interest;
+                balances[id] += interest;
+
+                const minPay = Math.min(minimums[id], balances[id]);
+                balances[id] -= minPay;
+                totalPaid += minPay;
+            }
+
+            // Apply extra + freed minimums to active debts in order (cascade leftover)
+            let remainingExtra = extraPayment + freedAmount;
+            for (const id of activeIds) {
+                if (remainingExtra <= 0 || balances[id] <= 0) break;
+                const applied = Math.min(remainingExtra, balances[id]);
+                balances[id] -= applied;
+                totalPaid += applied;
+                remainingExtra -= applied;
+            }
+
+            // Check if any debts just got paid off — free their minimums
+            for (const id of activeIds) {
+                if (balances[id] <= 0.01) {
+                    balances[id] = 0;
+                    freedAmount += minimums[id];
+                }
+            }
+
+            // Record timeline snapshot every month
+            debts.forEach(d => { monthBalances[d.id] = Math.max(0, balances[d.id]); });
+            timeline.push({ month: months, balances: { ...monthBalances } });
+        }
+
+        return { months, totalInterest, totalPaid, timeline };
+    }
+
+    recalculatePayoffPlan() {
+        const plan = this.data.debtPayoffPlan;
+        if (!plan.debtIds.length) return;
+
+        // Re-sort based on current strategy and balances
+        const debts = this.data.assets.filter(a => a.type === 'liability' && plan.debtIds.includes(a.id));
+        if (plan.strategy === 'snowball') {
+            debts.sort((a, b) => a.value - b.value);
+        } else {
+            debts.sort((a, b) => (b.interestRate || 0) - (a.interestRate || 0));
+        }
+        plan.debtIds = debts.map(d => d.id);
+        plan.updatedAt = new Date().toISOString();
+        this.saveData();
+    }
+
+    getDebtPayoffProgress() {
+        const plan = this.data.debtPayoffPlan;
+        const debts = this.data.assets.filter(a => a.type === 'liability' && plan.debtIds.includes(a.id));
+        if (!debts.length) return null;
+
+        const totalOriginal = debts.reduce((s, d) => s + (d.originalAmount || d.value), 0);
+        const totalRemaining = debts.reduce((s, d) => s + d.value, 0);
+        const totalPaid = Math.max(0, totalOriginal - totalRemaining);
+        const percentPaid = totalOriginal > 0 ? Math.round((totalPaid / totalOriginal) * 100) : 0;
+
+        // Focus debt is the first one in order that still has a balance
+        const ordered = this.getPayoffOrder();
+        const focusDebt = ordered.find(d => d.value > 0.01) || null;
+
+        // Project payoff date
+        const projection = this.projectPayoff(ordered.filter(d => d.value > 0.01), plan.extraPayment || 0);
+        const projectedPayoffDate = new Date();
+        projectedPayoffDate.setMonth(projectedPayoffDate.getMonth() + projection.months);
+
+        return { totalOriginal, totalRemaining, totalPaid, percentPaid, focusDebt, projectedPayoffDate, projection };
+    }
+
+    // ==========================================
+    // DEBT PAYOFF PAGE
+    // ==========================================
+
+    renderDebtPayoff() {
+        const container = document.getElementById('debt-payoff-content');
+        if (!container) return;
+        const plan = this.data.debtPayoffPlan;
+
+        if (!plan.debtIds || plan.debtIds.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-bullseye"></i>
+                    <h3>No Debt Payoff Plan</h3>
+                    <p>You haven't set up a debt payoff plan yet. Add your debts and choose a strategy to get started.</p>
+                    <button class="btn-primary" data-action="rerun-onboarding"><i class="fas fa-plus"></i> Set Up Plan</button>
+                </div>
+            `;
+            return;
+        }
+
+        const progress = this.getDebtPayoffProgress();
+        if (!progress) { container.innerHTML = '<p>No debts found in your plan.</p>'; return; }
+
+        const { totalOriginal, totalRemaining, totalPaid, percentPaid, focusDebt, projectedPayoffDate, projection } = progress;
+        const dateStr = projectedPayoffDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+        const ordered = this.getPayoffOrder();
+        const totalMinPayments = ordered.reduce((s, d) => s + (d.minPayment || 0), 0);
+        const strategyLabel = plan.strategy === 'avalanche' ? 'Avalanche' : 'Snowball';
+
+        let html = `
+            <div class="debt-overview-card">
+                <h3>Overall Progress</h3>
+                <div class="debt-progress-bar-container">
+                    <div class="debt-progress-bar">
+                        <div class="debt-progress-fill ${percentPaid >= 100 ? 'complete' : ''}" style="width: ${Math.min(percentPaid, 100)}%"></div>
+                    </div>
+                    <span class="debt-progress-pct">${percentPaid}% paid</span>
+                </div>
+                <div class="debt-overview-stats">
+                    <div class="debt-stat">
+                        <span class="debt-stat-value">${this.formatCurrency(totalPaid)}</span>
+                        <span class="debt-stat-label">Paid Off</span>
+                    </div>
+                    <div class="debt-stat">
+                        <span class="debt-stat-value">${this.formatCurrency(totalRemaining)}</span>
+                        <span class="debt-stat-label">Remaining</span>
+                    </div>
+                    <div class="debt-stat">
+                        <span class="debt-stat-value">${projection.months > 0 ? dateStr : 'Done!'}</span>
+                        <span class="debt-stat-label">Projected Debt-Free</span>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Focus debt card
+        if (focusDebt) {
+            const focusOriginal = focusDebt.originalAmount || focusDebt.value;
+            const focusPaid = Math.max(0, focusOriginal - focusDebt.value);
+            const focusPct = focusOriginal > 0 ? Math.round((focusPaid / focusOriginal) * 100) : 0;
+            html += `
+                <div class="focus-debt-card">
+                    <div class="focus-debt-header">
+                        <span class="focus-badge">FOCUS</span>
+                        <h3>${this.escapeHtml(focusDebt.name)}</h3>
+                    </div>
+                    <div class="focus-debt-details">
+                        <span>${this.formatCurrency(focusDebt.value)} remaining</span>
+                        <span>${focusDebt.interestRate || 0}% APR</span>
+                        <span>${this.formatCurrency(focusDebt.minPayment || 0)}/mo minimum</span>
+                    </div>
+                    <div class="debt-progress-bar-container">
+                        <div class="debt-progress-bar">
+                            <div class="debt-progress-fill" style="width: ${focusPct}%"></div>
+                        </div>
+                        <span class="debt-progress-pct">${focusPct}% paid</span>
+                    </div>
+                    <button class="btn-primary" data-action="debt-make-payment" data-id="${focusDebt.id}"><i class="fas fa-credit-card"></i> Make Payment</button>
+                </div>
+            `;
+        }
+
+        // All debts list
+        html += '<div class="debt-list-section"><h3>All Debts <span class="text-muted">(in payoff order)</span></h3><div class="debt-list">';
+        ordered.forEach((d, i) => {
+            const original = d.originalAmount || d.value;
+            const paid = Math.max(0, original - d.value);
+            const pct = original > 0 ? Math.round((paid / original) * 100) : 0;
+            const isPaidOff = d.value <= 0.01;
+            const isFocus = focusDebt && d.id === focusDebt.id;
+            html += `
+                <div class="debt-list-item ${isPaidOff ? 'paid-off' : ''} ${isFocus ? 'is-focus' : ''}">
+                    <div class="debt-list-num">${i + 1}</div>
+                    <div class="debt-list-info">
+                        <div class="debt-list-name">
+                            ${isPaidOff ? '<i class="fas fa-check-circle"></i> ' : ''}${this.escapeHtml(d.name)}
+                            ${isFocus ? '<span class="focus-badge-sm">FOCUS</span>' : ''}
+                        </div>
+                        <div class="debt-progress-bar small">
+                            <div class="debt-progress-fill" style="width: ${pct}%"></div>
+                        </div>
+                    </div>
+                    <div class="debt-list-details">
+                        <span>${this.formatCurrency(d.value)}</span>
+                        <span class="text-muted">${d.interestRate || 0}%</span>
+                    </div>
+                    <button class="btn-icon" data-action="debt-make-payment" data-id="${d.id}" ${isPaidOff ? 'disabled' : ''}><i class="fas fa-dollar-sign"></i></button>
+                </div>
+            `;
+        });
+        html += '</div></div>';
+
+        // Payoff timeline chart
+        html += `
+            <div class="debt-chart-section">
+                <h3>Payoff Timeline</h3>
+                <canvas id="debt-payoff-chart" height="250"></canvas>
+            </div>
+        `;
+
+        // Strategy footer
+        html += `
+            <div class="debt-plan-footer">
+                <span><i class="fas fa-chess-knight"></i> Strategy: <strong>${strategyLabel}</strong></span>
+                <span><i class="fas fa-plus-circle"></i> Extra: <strong>${this.formatCurrency(plan.extraPayment || 0)}/mo</strong></span>
+                <span><i class="fas fa-coins"></i> Total monthly: <strong>${this.formatCurrency(totalMinPayments + (plan.extraPayment || 0))}</strong></span>
+            </div>
+        `;
+
+        container.innerHTML = html;
+
+        // Render Chart.js timeline
+        this.renderDebtPayoffChart(ordered, projection);
+    }
+
+    renderDebtPayoffChart(debts, projection) {
+        const canvas = document.getElementById('debt-payoff-chart');
+        if (!canvas || !projection.timeline.length) return;
+
+        if (this.charts.debtPayoff) this.charts.debtPayoff.destroy();
+
+        // Sample the timeline to avoid too many data points (max 36 points)
+        const timeline = projection.timeline;
+        const step = Math.max(1, Math.floor(timeline.length / 36));
+        const sampled = timeline.filter((_, i) => i % step === 0 || i === timeline.length - 1);
+
+        const colors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#8b5cf6', '#ef4444', '#06b6d4', '#84cc16'];
+        const datasets = debts.map((d, i) => ({
+            label: d.name,
+            data: sampled.map(t => t.balances[d.id] || 0),
+            borderColor: colors[i % colors.length],
+            backgroundColor: colors[i % colors.length] + '20',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 0
+        }));
+
+        const labels = sampled.map(t => {
+            const date = new Date();
+            date.setMonth(date.getMonth() + t.month);
+            return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+        });
+
+        this.charts.debtPayoff = new Chart(canvas, {
+            type: 'line',
+            data: { labels, datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { position: 'bottom' } },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { callback: v => this.data.settings.currency + v.toLocaleString() }
+                    }
+                },
+                interaction: { mode: 'index', intersect: false }
+            }
+        });
+    }
+
+    openEditDebtPlan() {
+        const plan = this.data.debtPayoffPlan;
+        const strategyRadio = document.querySelector(`input[name="edit-strategy"][value="${plan.strategy}"]`);
+        if (strategyRadio) strategyRadio.checked = true;
+        document.getElementById('edit-extra-payment').value = plan.extraPayment || 0;
+        this.openModal('edit-debt-plan-modal');
+    }
+
+    saveEditDebtPlan(event) {
+        event.preventDefault();
+        const strategy = document.querySelector('input[name="edit-strategy"]:checked')?.value || 'avalanche';
+        const extra = parseFloat(document.getElementById('edit-extra-payment').value) || 0;
+
+        this.data.debtPayoffPlan.strategy = strategy;
+        this.data.debtPayoffPlan.extraPayment = extra;
+        this.recalculatePayoffPlan();
+        this.closeModal('edit-debt-plan-modal');
+        this.renderDebtPayoff();
+        this.showToast('Payoff plan updated', 'success');
+    }
+
+    checkDebtFreeStatus() {
+        const plan = this.data.debtPayoffPlan;
+        if (!plan.debtIds || plan.debtIds.length === 0) return;
+        if (this.data.settings.debtPayoffComplete) return;
+
+        const debts = this.data.assets.filter(a => a.type === 'liability' && plan.debtIds.includes(a.id));
+        const allPaid = debts.every(d => d.value <= 0.01);
+        if (allPaid) {
+            this.data.settings.debtPayoffComplete = true;
+            this.saveData();
+            this.openModal('debt-free-modal');
+        }
+    }
+
+    startEnvelopeTransition() {
+        this.data.settings.financialProfile = 'envelope-ready';
+        this.saveData();
+        this.closeModal('debt-free-modal');
+        // Show onboarding for just the envelope steps
+        this.onboardingProfile = 'envelope-ready';
+        this.onboardingStep = 3;
+        this.onboardAccounts = [];
+        this.onboardIncome = [];
+        document.getElementById('onboarding-overlay').style.display = 'flex';
+        this.updateOnboardingStep();
+        this.showToast('Let\'s set up your envelopes!', 'success');
+    }
+
+    // ==========================================
     // UNIFIED ACCOUNT ACTION
     // ==========================================
 
@@ -1820,6 +2464,8 @@ class FinanceApp {
         this.closeModal('account-action-modal');
         this.renderAccounts();
         this.renderDashboard();
+        this.renderDebtPayoff();
+        this.checkDebtFreeStatus();
     }
 
     // ==========================================
@@ -2190,6 +2836,8 @@ class FinanceApp {
 
     renderAll() {
         this.renderDashboard();
+        this.renderDebtPayoff();
+        this.updateNavVisibility();
         this.populateCategorySelects();
         this.populateQuickAddCategories();
     }
@@ -2757,6 +3405,19 @@ class FinanceApp {
         if (nameInput) nameInput.value = this.data.settings.userName || '';
         document.getElementById('theme-select').value = this.data.settings.theme;
         document.getElementById('currency-select').value = this.data.settings.currency;
+
+        // Financial profile display
+        const profileBadge = document.getElementById('settings-financial-profile');
+        const switchBtn = document.getElementById('settings-switch-to-envelopes');
+        if (profileBadge) {
+            const profile = this.data.settings.financialProfile;
+            const labels = { 'debt-payoff': 'Debt Payoff Mode', 'envelope-ready': 'Envelope Budgeting', 'none': 'Not Set' };
+            const icons = { 'debt-payoff': 'fa-bullseye', 'envelope-ready': 'fa-envelope-open-text', 'none': 'fa-question-circle' };
+            profileBadge.innerHTML = `<i class="fas ${icons[profile] || icons['none']}"></i> ${labels[profile] || labels['none']}`;
+        }
+        if (switchBtn) {
+            switchBtn.style.display = this.data.settings.financialProfile === 'debt-payoff' ? '' : 'none';
+        }
         const list = document.getElementById('categories-list');
         if (!list) return;
         const grouped = { income: [], expense: [] };
@@ -2817,7 +3478,9 @@ class FinanceApp {
         this.data = {
             transactions: [], recurring: [], assets: [], networthHistory: [],
             categories: [...this.defaultCategories], envelopes: [], incomeSources: [],
-            paycheckHistory: [], settings: { theme: 'light', currency: '$', onboardingComplete: false, userName: '' },
+            paycheckHistory: [], billReminders: [],
+            debtPayoffPlan: { strategy: 'avalanche', extraPayment: 0, debtIds: [], createdAt: null, updatedAt: null },
+            settings: { theme: 'light', currency: '$', onboardingComplete: false, userName: '', financialProfile: 'none', debtPayoffComplete: false },
             version: 2
         };
         this.saveData();

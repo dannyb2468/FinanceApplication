@@ -62,13 +62,7 @@
     <!-- Onboarding Wizard -->
     <div id="onboarding-overlay" class="onboarding-overlay" style="display:none">
         <div class="onboarding-container">
-            <div class="onboarding-progress">
-                <span class="onboarding-dot active" data-step="1"></span>
-                <span class="onboarding-dot" data-step="2"></span>
-                <span class="onboarding-dot" data-step="3"></span>
-                <span class="onboarding-dot" data-step="4"></span>
-                <span class="onboarding-dot" data-step="5"></span>
-            </div>
+            <div id="onboarding-progress" class="onboarding-progress"></div>
 
             <!-- Step 1: Welcome -->
             <div class="onboarding-step active" data-step="1">
@@ -93,8 +87,131 @@
                 </div>
             </div>
 
-            <!-- Step 2: Accounts -->
+            <!-- Step 2: Profile Selection (NEW) -->
             <div class="onboarding-step" data-step="2">
+                <div class="onboarding-icon"><i class="fas fa-route"></i></div>
+                <h2>What's your financial situation?</h2>
+                <p>We'll customize your experience based on where you are.</p>
+                <div class="profile-selection-cards">
+                    <button class="profile-card" data-action="select-profile" data-profile="debt-payoff">
+                        <div class="profile-card-icon"><i class="fas fa-bullseye"></i></div>
+                        <h3>I have debts to pay off</h3>
+                        <p>Credit cards, loans, or other debts. We'll help you build a payoff plan first, then transition to budgeting.</p>
+                    </button>
+                    <button class="profile-card" data-action="select-profile" data-profile="envelope-ready">
+                        <div class="profile-card-icon"><i class="fas fa-envelope-open-text"></i></div>
+                        <h3>I'm ready to budget</h3>
+                        <p>No major debts. Set up envelope budgeting to take control of your spending right away.</p>
+                    </button>
+                </div>
+                <div class="onboarding-actions">
+                    <button class="btn-secondary" data-action="skip">Skip Setup</button>
+                </div>
+            </div>
+
+            <!-- === DEBT-PAYOFF PATH === -->
+
+            <!-- Debt Step 3: Add Your Debts -->
+            <div class="onboarding-step" data-step="debt-3">
+                <div class="onboarding-icon"><i class="fas fa-file-invoice-dollar"></i></div>
+                <h2>Add Your Debts</h2>
+                <p>List all debts you want to pay off. We'll build a plan to eliminate them.</p>
+                <div id="onboard-debts-list" class="onboard-accounts-list"></div>
+                <div class="onboard-add-row">
+                    <select id="onboard-debt-type">
+                        <option value="credit-card">Credit Card</option>
+                        <option value="personal-loan">Personal Loan</option>
+                        <option value="student-loan">Student Loan</option>
+                        <option value="auto-loan">Auto Loan</option>
+                        <option value="heloc">HELOC</option>
+                        <option value="other-debt">Other Debt</option>
+                    </select>
+                    <input type="text" id="onboard-debt-name" placeholder="Name (e.g. Chase Visa)">
+                    <input type="number" id="onboard-debt-balance" placeholder="Balance owed" step="0.01" min="0">
+                    <button class="btn-primary btn-sm" data-action="add-debt"><i class="fas fa-plus"></i></button>
+                </div>
+                <div id="onboard-debt-details" class="onboard-debt-details" style="display:none">
+                    <div class="onboard-debt-detail-row">
+                        <div class="form-group">
+                            <label for="onboard-debt-rate">Interest Rate (%)</label>
+                            <input type="number" id="onboard-debt-rate" placeholder="e.g. 22.9" step="0.01" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="onboard-debt-min">Minimum Payment</label>
+                            <input type="number" id="onboard-debt-min" placeholder="e.g. 50" step="0.01" min="0">
+                        </div>
+                    </div>
+                </div>
+                <div class="onboarding-actions">
+                    <button class="btn-secondary" data-action="onboard-back">Back</button>
+                    <button class="btn-primary" data-action="next">Next <i class="fas fa-arrow-right"></i></button>
+                </div>
+            </div>
+
+            <!-- Debt Step 4: Choose Strategy -->
+            <div class="onboarding-step" data-step="debt-4">
+                <div class="onboarding-icon"><i class="fas fa-chess-knight"></i></div>
+                <h2>Choose Your Strategy</h2>
+                <p>How should we order your debt payoff?</p>
+                <div class="strategy-selection">
+                    <label class="strategy-card active" data-strategy="avalanche">
+                        <input type="radio" name="onboard-strategy" value="avalanche" checked>
+                        <div class="strategy-card-header">
+                            <i class="fas fa-mountain"></i>
+                            <h3>Avalanche</h3>
+                            <span class="strategy-badge recommended">Saves most money</span>
+                        </div>
+                        <p>Pay off highest interest rate first. Mathematically optimal — you'll pay less interest overall.</p>
+                    </label>
+                    <label class="strategy-card" data-strategy="snowball">
+                        <input type="radio" name="onboard-strategy" value="snowball">
+                        <div class="strategy-card-header">
+                            <i class="fas fa-snowflake"></i>
+                            <h3>Snowball</h3>
+                            <span class="strategy-badge">Fastest wins</span>
+                        </div>
+                        <p>Pay off smallest balance first. Quick wins build momentum and keep you motivated.</p>
+                    </label>
+                </div>
+                <div class="form-group" style="margin-top: 1rem">
+                    <label for="onboard-extra-payment">Extra monthly payment beyond minimums</label>
+                    <input type="number" id="onboard-extra-payment" placeholder="e.g. 200" step="1" min="0" value="0">
+                    <small class="text-muted">Any extra you can throw at debt each month speeds up payoff dramatically.</small>
+                </div>
+                <div id="onboard-debt-order-preview" class="onboard-debt-order-preview"></div>
+                <div class="onboarding-actions">
+                    <button class="btn-secondary" data-action="onboard-back">Back</button>
+                    <button class="btn-primary" data-action="next">Next <i class="fas fa-arrow-right"></i></button>
+                </div>
+            </div>
+
+            <!-- Debt Step 5: Review Plan -->
+            <div class="onboarding-step" data-step="debt-5">
+                <div class="onboarding-icon"><i class="fas fa-chart-line"></i></div>
+                <h2>Your Payoff Plan</h2>
+                <p>Here's your projected debt payoff timeline.</p>
+                <div id="onboard-plan-review" class="onboard-plan-review"></div>
+                <div class="onboarding-actions">
+                    <button class="btn-secondary" data-action="onboard-back">Back</button>
+                    <button class="btn-primary" data-action="next">Next <i class="fas fa-arrow-right"></i></button>
+                </div>
+            </div>
+
+            <!-- Debt Step 6: Summary -->
+            <div class="onboarding-step" data-step="debt-6">
+                <div class="onboarding-icon"><i class="fas fa-check-circle"></i></div>
+                <h2>You're Ready to Crush Your Debt!</h2>
+                <p>Here's what we set up for you:</p>
+                <div id="onboard-debt-summary" class="onboard-summary"></div>
+                <div class="onboarding-actions">
+                    <button class="btn-primary btn-lg" data-action="finish"><i class="fas fa-rocket"></i> Let's Go</button>
+                </div>
+            </div>
+
+            <!-- === ENVELOPE-READY PATH === -->
+
+            <!-- Envelope Step 3: Accounts -->
+            <div class="onboarding-step" data-step="env-3">
                 <div class="onboarding-icon"><i class="fas fa-university"></i></div>
                 <h2>Add Your Accounts</h2>
                 <p>Quick-add common account types. You can always add more later.</p>
@@ -115,13 +232,13 @@
                     <button class="btn-primary btn-sm" data-action="add-account"><i class="fas fa-plus"></i></button>
                 </div>
                 <div class="onboarding-actions">
-                    <button class="btn-secondary" data-action="skip">Skip</button>
+                    <button class="btn-secondary" data-action="onboard-back">Back</button>
                     <button class="btn-primary" data-action="next">Next <i class="fas fa-arrow-right"></i></button>
                 </div>
             </div>
 
-            <!-- Step 3: Envelopes -->
-            <div class="onboarding-step" data-step="3">
+            <!-- Envelope Step 4: Envelopes -->
+            <div class="onboarding-step" data-step="env-4">
                 <div class="onboarding-icon"><i class="fas fa-envelope-open-text"></i></div>
                 <h2>Set Up Envelopes</h2>
                 <p>Envelopes help you pre-allocate money from each paycheck. Check the ones you want.</p>
@@ -176,13 +293,13 @@
                     </label>
                 </div>
                 <div class="onboarding-actions">
-                    <button class="btn-secondary" data-action="skip">Skip</button>
+                    <button class="btn-secondary" data-action="onboard-back">Back</button>
                     <button class="btn-primary" data-action="next">Next <i class="fas fa-arrow-right"></i></button>
                 </div>
             </div>
 
-            <!-- Step 4: Income -->
-            <div class="onboarding-step" data-step="4">
+            <!-- Envelope Step 5: Income -->
+            <div class="onboarding-step" data-step="env-5">
                 <div class="onboarding-icon"><i class="fas fa-briefcase"></i></div>
                 <h2>Add Income Sources</h2>
                 <p>Add your jobs or side gigs so you can quickly record paychecks.</p>
@@ -195,13 +312,13 @@
                     <button class="btn-primary btn-sm" data-action="add-income"><i class="fas fa-plus"></i></button>
                 </div>
                 <div class="onboarding-actions">
-                    <button class="btn-secondary" data-action="skip">Skip</button>
+                    <button class="btn-secondary" data-action="onboard-back">Back</button>
                     <button class="btn-primary" data-action="next">Next <i class="fas fa-arrow-right"></i></button>
                 </div>
             </div>
 
-            <!-- Step 5: Ready -->
-            <div class="onboarding-step" data-step="5">
+            <!-- Envelope Step 6: Summary -->
+            <div class="onboarding-step" data-step="env-6">
                 <div class="onboarding-icon"><i class="fas fa-check-circle"></i></div>
                 <h2>You're All Set!</h2>
                 <p>Here's what we created for you:</p>
@@ -235,6 +352,10 @@
                 <li class="nav-item active" data-page="dashboard">
                     <i class="fas fa-home"></i>
                     <span>Dashboard</span>
+                </li>
+                <li class="nav-item" data-page="debt" id="nav-debt" style="display:none">
+                    <i class="fas fa-bullseye"></i>
+                    <span>Debt Payoff</span>
                 </li>
                 <li class="nav-item" data-page="envelopes">
                     <i class="fas fa-envelope-open-text"></i>
@@ -367,6 +488,19 @@
                         <div id="upcoming-recurring-list"></div>
                     </div>
                 </div>
+            </div>
+
+            <!-- ===================== DEBT PAYOFF ===================== -->
+            <div id="debt-page" class="page">
+                <div class="page-header">
+                    <h1>Debt Payoff</h1>
+                    <div class="page-header-actions">
+                        <button class="btn-secondary" data-action="open-edit-debt-plan">
+                            <i class="fas fa-cog"></i> Edit Plan
+                        </button>
+                    </div>
+                </div>
+                <div id="debt-payoff-content"></div>
             </div>
 
             <!-- ===================== ENVELOPES ===================== -->
@@ -705,6 +839,15 @@
                         <div class="setting-item">
                             <label for="settings-name">Display Name</label>
                             <input type="text" id="settings-name" placeholder="Your name">
+                        </div>
+                        <div class="setting-item">
+                            <label>Financial Mode</label>
+                            <span id="settings-financial-profile" class="settings-profile-badge"></span>
+                        </div>
+                        <div class="setting-item" id="settings-switch-to-envelopes" style="display:none">
+                            <button class="btn-secondary" data-action="start-envelope-transition">
+                                <i class="fas fa-envelope-open-text"></i> Switch to Envelope Budgeting
+                            </button>
                         </div>
                         <div class="setting-item" style="border-bottom:none; padding-top:16px;">
                             <button class="btn-secondary" data-action="rerun-onboarding">
@@ -1284,6 +1427,55 @@
     </div>
 
     <!-- Confirm Dialog -->
+    <!-- Edit Debt Plan Modal -->
+    <div id="edit-debt-plan-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-debt-plan-title">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h2 id="edit-debt-plan-title">Edit Payoff Plan</h2>
+                <button class="modal-close" data-action="close-modal" data-modal="edit-debt-plan-modal" aria-label="Close">&times;</button>
+            </div>
+            <form id="edit-debt-plan-form">
+                <div class="form-group">
+                    <label>Payoff Strategy</label>
+                    <div class="strategy-toggle">
+                        <label class="radio-option">
+                            <input type="radio" name="edit-strategy" value="avalanche">
+                            <span><i class="fas fa-mountain"></i> Avalanche <small>(highest interest first)</small></span>
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="edit-strategy" value="snowball">
+                            <span><i class="fas fa-snowflake"></i> Snowball <small>(smallest balance first)</small></span>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="edit-extra-payment">Extra Monthly Payment</label>
+                    <input type="number" id="edit-extra-payment" step="1" min="0" placeholder="0">
+                    <small class="text-muted">Amount beyond minimum payments applied to focus debt each month</small>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary" data-action="close-modal" data-modal="edit-debt-plan-modal">Cancel</button>
+                    <button type="submit" class="btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Debt Free Celebration Modal -->
+    <div id="debt-free-modal" class="modal" role="dialog" aria-modal="true">
+        <div class="modal-content modal-small">
+            <div class="debt-free-celebration">
+                <div class="celebration-icon"><i class="fas fa-trophy"></i></div>
+                <h2>You're Debt-Free!</h2>
+                <p>Congratulations! You've paid off all your debts. Ready to take the next step with envelope budgeting?</p>
+                <div class="modal-actions" style="flex-direction: column; gap: 0.75rem;">
+                    <button class="btn-primary btn-lg" data-action="start-envelope-transition"><i class="fas fa-envelope-open-text"></i> Set Up Envelope Budgeting</button>
+                    <button class="btn-secondary" data-action="close-modal" data-modal="debt-free-modal">I'll do it later</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="confirm-dialog" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
         <div class="modal-content modal-small">
             <div class="modal-header">
@@ -1383,7 +1575,11 @@
             <i class="fas fa-home"></i>
             <span>Home</span>
         </button>
-        <button class="mobile-nav-item" data-page="envelopes">
+        <button class="mobile-nav-item" data-page="debt" id="mobile-nav-debt" style="display:none">
+            <i class="fas fa-bullseye"></i>
+            <span>Debt</span>
+        </button>
+        <button class="mobile-nav-item" data-page="envelopes" id="mobile-nav-envelopes">
             <i class="fas fa-envelope-open-text"></i>
             <span>Envelopes</span>
         </button>
